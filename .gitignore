@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+next-env.d.ts
+.DS_Store
+*.tsbuildinfo
+.env*.local
+
+# Personal KHQR poster — encodes real bank account details.
+# Remove this line only if you intend to publish/deploy it.
+public/khqr.png
