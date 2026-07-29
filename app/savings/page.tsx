@@ -26,6 +26,7 @@ import {
   Wallet,
 } from 'lucide-react';
 
+import { Button } from '@/components/ui/button';
 import {
   Select,
   SelectContent,
@@ -717,6 +718,54 @@ function ArchivePill() {
 }
 
 /**
+ * The full-width control at the top of the two tabs that can be acted on: the
+ * daily log and the monthly payday drop. Both had the same hand-rolled class
+ * block; going through the shadcn Button gives them the coarse-pointer touch
+ * floor and one definition of the emerald treatment.
+ *
+ * `whitespace-normal` undoes the Button's `nowrap`, and `h-auto min-h-16`
+ * replaces its fixed height so a wrapped label has somewhere to go — these
+ * labels carry a month name and a formatted amount, and "Inject September
+ * Allocation ($195.00)" is wider than a small phone at this font size.
+ *
+ * The disabled treatment is a full-opacity swap to a flat card rather than the
+ * Button's default 50% fade, which on the daily tab has to read as "already
+ * logged" rather than as "unavailable".
+ */
+function PrimaryAction({
+  icon,
+  label,
+  disabled,
+  onClick,
+  ariaLabel,
+}: {
+  icon: ReactNode;
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+  ariaLabel?: string;
+}) {
+  return (
+    <Button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      className={cn(
+        'h-auto min-h-16 w-full gap-2 rounded-xl px-5 py-4 text-sm font-semibold whitespace-normal',
+        'bg-emerald-500 text-emerald-950 hover:bg-emerald-400 active:scale-[0.99]',
+        'focus-visible:border-emerald-500 focus-visible:ring-emerald-500/40',
+        'disabled:pointer-events-auto disabled:cursor-not-allowed disabled:opacity-100',
+        'disabled:border-border disabled:bg-card disabled:text-muted-foreground',
+      )}
+    >
+      {icon}
+      {label}
+    </Button>
+  );
+}
+
+/**
  * Stands in for a tab's primary action while a past year is open. Matches the
  * button's height so switching years never shifts the panel below it.
  */
@@ -881,20 +930,14 @@ function DailyPanel({
       {readOnly ? (
         <ArchiveNotice year={shape.year} />
       ) : (
-        <button
-          type="button"
+        <PrimaryAction
           onClick={onMarkToday}
           disabled={!canLog}
-          className={cn(
-            'flex min-h-[64px] w-full items-center justify-center gap-2 rounded-xl px-5 py-4 text-sm font-semibold transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60',
-            canLog
-              ? 'bg-emerald-500 text-emerald-950 hover:bg-emerald-400 active:scale-[0.99]'
-              : 'cursor-not-allowed border border-border bg-card text-muted-foreground',
-          )}
-        >
-          {mounted && todayLogged ? <Check className="h-4 w-4" /> : <Wallet className="h-4 w-4" />}
-          {buttonLabel}
-        </button>
+          icon={
+            mounted && todayLogged ? <Check className="h-4 w-4" /> : <Wallet className="h-4 w-4" />
+          }
+          label={buttonLabel}
+        />
       )}
 
       <Panel>
@@ -1320,29 +1363,23 @@ function BucketsPanel({
       {readOnly ? (
         <ArchiveNotice year={year} />
       ) : (
-        <button
-          type="button"
+        <PrimaryAction
           onClick={onPayday}
           // Held shut until mount, like the daily button: before that the month
           // it would file the drop against has not been named yet.
           disabled={!mounted || injected}
-          aria-label={
+          ariaLabel={
             injected
               ? `${monthName} payday allocation already applied`
               : `Inject the ${monthName} payday allocation of ${formatMoney(PAYDAY_TOTAL)}`
           }
-          className={cn(
-            'flex min-h-[64px] w-full items-center justify-center gap-2 rounded-xl px-5 py-4 text-sm font-semibold transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60',
+          icon={injected ? <Check className="h-4 w-4" /> : <Banknote className="h-4 w-4" />}
+          label={
             injected
-              ? 'cursor-not-allowed border border-border bg-card text-muted-foreground'
-              : 'bg-emerald-500 text-emerald-950 hover:bg-emerald-400 active:scale-[0.99]',
-          )}
-        >
-          {injected ? <Check className="h-4 w-4" /> : <Banknote className="h-4 w-4" />}
-          {injected
-            ? `${monthName} Allocation Applied`
-            : `Inject ${monthName} Allocation (${formatMoney(PAYDAY_TOTAL)})`}
-        </button>
+              ? `${monthName} Allocation Applied`
+              : `Inject ${monthName} Allocation (${formatMoney(PAYDAY_TOTAL)})`
+          }
+        />
       )}
 
       <Panel>
@@ -1454,28 +1491,29 @@ function BucketsPanel({
                   <ArchivePill />
                 ) : (
                   <div className="flex items-center gap-2">
-                    <button
+                    <Button
                       type="button"
+                      variant="outline"
                       onClick={() => onReset(id)}
                       disabled={!mounted || balance <= 0}
                       aria-label={`Clear ${label} for ${monthName}`}
                       title={`Clear ${label} back to ${formatMoney(0)}`}
-                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-border bg-muted/50 px-3 text-xs font-medium text-foreground/80 transition-colors hover:border-muted-foreground/40 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border"
+                      className="h-9 gap-1.5 border-border bg-muted/50 px-3 text-xs text-foreground/80 hover:border-muted-foreground/40 hover:bg-muted/50 hover:text-foreground focus-visible:ring-emerald-400/40 disabled:opacity-40 dark:bg-muted/50 dark:hover:bg-muted/50"
                     >
                       <RotateCcw className="h-3.5 w-3.5" />
                       Reset
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       type="button"
                       onClick={() => onFund(id)}
                       disabled={!mounted || funded}
                       aria-label={`Mark ${label} funded for ${monthName}`}
                       title={`Fund ${label} to its ${formatMoney(target)} quota`}
-                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-emerald-500/40 dark:border-emerald-500/30 bg-emerald-500/10 px-3 text-xs font-medium text-emerald-600 dark:text-emerald-400 transition-colors hover:bg-emerald-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-emerald-500/10"
+                      className="h-9 gap-1.5 border-emerald-500/40 bg-emerald-500/10 px-3 text-xs text-emerald-600 hover:bg-emerald-500/20 focus-visible:ring-emerald-400/40 disabled:opacity-40 dark:border-emerald-500/30 dark:text-emerald-400"
                     >
                       <CheckCheck className="h-3.5 w-3.5" />
                       Done
-                    </button>
+                    </Button>
                   </div>
                 )}
               </div>

@@ -136,4 +136,82 @@ html.dark {
   html {
     @apply font-sans;
   }
+
+  /* Touch behaviour for everything tappable, set once here rather than as a
+     class on each component, so hand-rolled controls — the contribution matrix
+     cells, the ladder tiles — are covered too.
+
+     `manipulation` keeps panning and pinch-zoom but drops double-tap-to-zoom,
+     which is what causes the ~300ms delay between a tap and its click on iOS.
+     The tap highlight is the grey box WebKit paints over a pressed control; it
+     is suppressed because every control here already answers a press with its
+     own `active:` state, and the two together read as a flicker. */
+  button,
+  [role='button'] {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Every lucide icon ships with a `lucide` class, and the library merges it
+     with whatever className the call site passes, so this reaches all of them
+     at once without touching a single usage.
+
+     lucide already sets `aria-hidden` on any icon that has no a11y prop, so
+     screen readers are handled upstream; what is left is layout and hit
+     testing. Never shrinking matters once a button label is allowed to wrap:
+     without it the glyph is the thing that gives up width, and a squashed icon
+     next to two lines of text is the usual mobile artefact. */
+  .lucide {
+    flex-shrink: 0;
+  }
+
+  /* A tap that lands on the glyph is a tap on the control, not on the SVG. */
+  button .lucide,
+  [role='button'] .lucide {
+    pointer-events: none;
+  }
+
+  /* A 12px glyph is legible on a desktop monitor and marginal on a phone held
+     at arm's length. Raise the floor for touch devices only, so the dense
+     desktop layout keeps its proportions. */
+  @media (pointer: coarse) {
+    .lucide {
+      min-width: 0.875rem;
+      min-height: 0.875rem;
+    }
+  }
+
+  /* Touch-target floor for the shadcn controls.
+
+     The radix-nova sizes are tuned for a mouse: a default button is 32px tall,
+     `sm` is 28px, `xs` is 24px, and a select item is 28px — all under the 44px
+     Apple's HIG asks for and the 48dp Material asks for. The variants are left
+     alone so the desktop layout keeps its density, and the floor is applied
+     only where the primary input is coarse.
+
+     This has to live in the base layer rather than as a coarse-pointer
+     min-height utility on the components. Variant utilities sort after plain
+     ones, so a
+     utility floor would beat — not yield to — a min-height set at the call site,
+     and the savings page's 64px primary action would have been shrunk to 44px on
+     precisely the devices the floor exists for. In the base layer any utility
+     outranks it, so it lifts a control that sets no height and gets out of the
+     way of one that does.
+
+     min-width is set alongside so an icon-only button stays at least square;
+     it beats the `size-*` width because min-width always does. Tabs are left
+     out: their trigger is height-driven by its list, and the savings page
+     already sizes those triggers at 44px. */
+  @media (pointer: coarse) {
+    [data-slot='button'],
+    [data-slot='select-trigger'] {
+      min-height: 2.75rem;
+      min-width: 2.75rem;
+    }
+
+    [data-slot='select-item'] {
+      min-height: 2.75rem;
+      padding-block: 0.5rem;
+    }
+  }
 }
