@@ -12,11 +12,16 @@ import {
   X,
 } from 'lucide-react';
 
+import { useDialog } from '@/hooks/use-dialog';
+
 /* -------------------------------------------------------------------------- */
 /*                            Hardcoded boundaries                            */
 /* -------------------------------------------------------------------------- */
 
 const STORAGE_KEY = 'apsara_savings_2026';
+/* Marks that the historical backfill already ran, so unchecking days by hand
+   is never undone by a re-seed on the next visit. */
+const SEED_KEY = 'apsara_savings_2026_seeded';
 const TRACK_START = '2026-01-01';
 const TRACK_END = '2026-12-31';
 const TOTAL_DAYS = 365;
@@ -115,6 +120,19 @@ function computeStreak(logged: Set<string>, today: string): number {
   return streak;
 }
 
+/**
+ * Every tracked date from Jan 1 up to and including `iso`.
+ * Used to backfill deposits that were made before this app existed.
+ */
+function datesThrough(iso: string): string[] {
+  if (VALID_DATES.has(iso)) {
+    return ALL_DATES.slice(0, ALL_DATES.indexOf(iso) + 1);
+  }
+  // Outside the track: after 2026 means the year is complete, before it means
+  // nothing has been saved yet.
+  return fromISODate(iso) > fromISODate(TRACK_END) ? [...ALL_DATES] : [];
+}
+
 function readStoredDates(): string[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -131,6 +149,24 @@ function readStoredDates(): string[] {
     return Array.from(new Set(clean)).sort();
   } catch {
     return [];
+  }
+}
+
+function hasSeeded(): boolean {
+  try {
+    return window.localStorage.getItem(SEED_KEY) === '1';
+  } catch {
+    // Treat unreadable storage as already seeded so a backfill is never applied
+    // repeatedly to a session that cannot remember it happened.
+    return true;
+  }
+}
+
+function markSeeded(): void {
+  try {
+    window.localStorage.setItem(SEED_KEY, '1');
+  } catch {
+    // Non-fatal: the seed still applies to this session.
   }
 }
 
@@ -182,48 +218,28 @@ type KhqrDialogProps = {
 
 function KhqrDialog({ open, onClose }: KhqrDialogProps) {
   const [imageFailed, setImageFailed] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-
-    // Lock the page behind the dialog. Padding equal to the width the scrollbar
-    // gives up keeps the layout from jumping sideways as overflow goes hidden.
-    const { body } = document;
-    const previousOverflow = body.style.overflow;
-    const previousPaddingRight = body.style.paddingRight;
-    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
-
-    body.style.overflow = 'hidden';
-    if (scrollbarWidth > 0) body.style.paddingRight = `${scrollbarWidth}px`;
-
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown);
-      body.style.overflow = previousOverflow;
-      body.style.paddingRight = previousPaddingRight;
-    };
-  }, [open, onClose]);
+  const panelRef = useDialog<HTMLDivElement>(open, onClose);
 
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="khqr-dialog-title"
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
         className="absolute inset-0 bg-zinc-950/80 backdrop-blur-sm"
         onClick={onClose}
         aria-hidden="true"
       />
 
-      <div className="relative max-h-[90vh] w-full max-w-sm overflow-y-auto overscroll-contain rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl">
+      {/* role="dialog" belongs on the panel, not the full-screen wrapper — the
+          wrapper also holds the backdrop, which is not part of the dialog. */}
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="khqr-dialog-title"
+        tabIndex={-1}
+        className="relative max-h-[90vh] w-full max-w-sm overflow-y-auto overscroll-contain rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl focus:outline-none"
+      >
         <button
           type="button"
           onClick={onClose}
@@ -317,8 +333,20 @@ export default function SavingsPage() {
   // Read browser-only values after the first paint so the server HTML and the
   // initial client render stay byte-identical.
   useEffect(() => {
-    setToday(toISODate(new Date()));
-    setCompleted(readStoredDates());
+    const todayISO = toISODate(new Date());
+    const stored = readStoredDates();
+
+    // Saving began on 2026-01-01, before this tracker existed. On the very first
+    // visit, backfill every day through today so the app matches the real
+    // deposit history. Runs once — see SEED_KEY.
+    if (hasSeeded()) {
+      setCompleted(stored);
+    } else {
+      setCompleted(Array.from(new Set([...stored, ...datesThrough(todayISO)])).sort());
+      markSeeded();
+    }
+
+    setToday(todayISO);
     setMounted(true);
   }, []);
 
@@ -351,6 +379,14 @@ export default function SavingsPage() {
     if (!todayInRange) return;
     setCompleted((prev) => (prev.includes(today) ? prev : [...prev, today].sort()));
   }, [today, todayInRange]);
+
+  // Correcting history: a backfilled day that was actually missed can be
+  // unchecked, and a forgotten one checked. Future days stay untouchable.
+  const toggleDate = useCallback((iso: string) => {
+    setCompleted((prev) =>
+      prev.includes(iso) ? prev.filter((d) => d !== iso) : [...prev, iso].sort(),
+    );
+  }, []);
 
   const buttonLabel = (() => {
     if (!mounted) return 'Mark $1.25 Saved';
@@ -517,18 +553,35 @@ export default function SavingsPage() {
 
                       const isLogged = loggedSet.has(iso);
                       const isToday = iso === today;
+                      // ISO strings compare lexicographically, so this is a
+                      // plain date comparison. Before mount `today` is '' and
+                      // nothing is editable, which keeps SSR markup identical.
+                      const isEditable = mounted && today !== '' && iso <= today;
+
+                      const label = `${formatLongDate(iso)} — ${
+                        isLogged ? `${formatMoney(DAILY_AMOUNT)} saved` : 'not logged'
+                      }`;
+                      const appearance = [
+                        'h-2.5 w-2.5 rounded-[2px] transition-colors duration-300',
+                        isLogged ? 'bg-emerald-500' : 'bg-zinc-800',
+                        isToday
+                          ? 'ring-1 ring-emerald-300/70 ring-offset-1 ring-offset-zinc-900'
+                          : '',
+                      ].join(' ');
+
+                      if (!isEditable) {
+                        return <span key={iso} title={label} className={appearance} />;
+                      }
 
                       return (
-                        <span
+                        <button
                           key={iso}
-                          title={`${formatLongDate(iso)} — ${
-                            isLogged ? formatMoney(DAILY_AMOUNT) + ' saved' : 'not logged'
-                          }`}
-                          className={[
-                            'h-2.5 w-2.5 rounded-[2px] transition-colors duration-300',
-                            isLogged ? 'bg-emerald-500' : 'bg-zinc-800',
-                            isToday ? 'ring-1 ring-emerald-300/70 ring-offset-1 ring-offset-zinc-900' : '',
-                          ].join(' ')}
+                          type="button"
+                          onClick={() => toggleDate(iso)}
+                          title={`${label} — click to toggle`}
+                          aria-label={label}
+                          aria-pressed={isLogged}
+                          className={`${appearance} cursor-pointer hover:ring-1 hover:ring-zinc-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400`}
                         />
                       );
                     })}
@@ -540,7 +593,7 @@ export default function SavingsPage() {
         </section>
 
         <p className="mt-6 text-center text-xs text-zinc-600">
-          Progress is stored locally in this browser.
+          Click any past day to correct it. Progress is stored locally in this browser.
         </p>
       </div>
 
