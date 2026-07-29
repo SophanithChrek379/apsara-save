@@ -1,22 +1,31 @@
-<!-- App mark: the five towers of Angkor Wat rising from their terrace — a quincunx,
-     so it is symmetric, and each tower is a straight shaft that pulls into a lotus
-     point, which is what keeps it from reading as a row of candles.
+<!-- App mark: an "A" knocked out of a filled disc, the same construction as the
+     sibling app Apsara Spend (amber disc on a near-black plate). The pair is meant
+     to be told apart by hue alone at 16px — amber for money leaving, emerald for
+     money kept — so the two icons deliberately share their geometry and differ
+     only in the one fill below. Changing the disc's shape here breaks that reading.
 
-     Geometry is laid out on a 512 grid so the shafts land on whole pixels when the
-     browser scales this down to 16 or 32 for a tab. The mark carries its own dark
-     plate rather than inheriting the page palette: a favicon is drawn onto browser
-     chrome, not onto the app, so it has to hold up against a light *and* a dark
-     tab strip with no media query to help it. -->
+     Emerald-500 (#10B981) rather than a fresh green: it is the accent the tracker
+     already uses ~33 times for solid fills, so the icon and the page it stands for
+     name the same colour.
+
+     The "A" is cut in the plate colour instead of being drawn in a third ink. That
+     keeps the mark to two values, which is what survives the 512 -> 16 downscale a
+     tab performs; a light "A" on the disc would silt up at that size.
+
+     Geometry sits on a 512 grid with every edge at slope 0.4 (2:5), so the stem
+     walls stay a constant 44 wide from apex to baseline and the counter closes on
+     the centre line at y=213 on its own — no separate crossbar fudge. The plate
+     carries its own dark fill rather than inheriting the page palette: a favicon is
+     composited onto browser chrome, not onto the app, so it has to hold against a
+     light *and* a dark tab strip with no media query to help it. -->
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
   <rect width="512" height="512" rx="112" fill="#0A0A0A" />
-  <g fill="#FAFAFA">
-    <!-- Outer pair, then the inner pair, then the central sanctuary. -->
-    <path d="M80 372V308Q89 273 104 258Q119 273 128 308V372Z" />
-    <path d="M152 372V264Q163 205 180 180Q197 205 208 264V372Z" />
-    <path d="M222 372V213Q235 126 256 88Q277 126 290 213V372Z" />
-    <path d="M304 372V264Q315 205 332 180Q349 205 360 264V372Z" />
-    <path d="M384 372V308Q393 273 408 258Q423 273 432 308V372Z" />
-    <!-- The terrace the towers stand on, and the mark's optical baseline. -->
-    <rect x="56" y="360" width="400" height="34" rx="12" />
-  </g>
+  <circle cx="256" cy="256" r="192" fill="#10B981" />
+  <!-- Outer silhouette then the triangular counter; evenodd punches the counter out. -->
+  <path
+    fill="#0A0A0A"
+    fill-rule="evenodd"
+    d="M230 168 L282 168 L346 328 L302 328 L290.8 300 L221.2 300 L210 328 L166 328 Z
+       M256 213 L278 268 L234 268 Z"
+  />
 </svg>
