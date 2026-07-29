@@ -5,3 +5,6 @@ next-env.d.ts
 .DS_Store
 *.tsbuildinfo
 .env*.local
+
+# Personal permission overrides — .claude/settings.json is the shared one.
+.claude/settings.local.json
