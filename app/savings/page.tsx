@@ -7,27 +7,11 @@ import {
   Check,
   Flame,
   Moon,
-  QrCode,
   Sun,
   Target,
   Wallet,
 } from 'lucide-react';
 
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet';
-import { useMediaQuery } from '@/hooks/use-media-query';
 import { useSystemTheme } from '@/hooks/use-system-theme';
 
 /* -------------------------------------------------------------------------- */
@@ -43,11 +27,6 @@ const TRACK_END = '2026-12-31';
 const TOTAL_DAYS = 365;
 const DAILY_AMOUNT = 1.25;
 const TARGET_GOAL = TOTAL_DAYS * DAILY_AMOUNT; // 456.25
-
-/* Destination account ("Bank B") that receives the daily transfer. */
-const KHQR_IMAGE_SRC = '/khqr.png';
-const DESTINATION_BANK = 'ACLEDA Bank';
-const DESTINATION_NAME = 'CHREK SOPHANITH';
 
 const MONTH_LABELS = [
   'Jan',
@@ -256,136 +235,6 @@ function ThemeIndicator() {
   );
 }
 
-type KhqrDialogProps = {
-  open: boolean;
-  onClose: () => void;
-};
-
-/** Shared panel contents — identical in the sheet and the dialog. */
-function KhqrPanel() {
-  const [imageFailed, setImageFailed] = useState(false);
-
-  return (
-    <>
-      {/*
-        Deliberately a plain <img>, not next/image: the optimizer re-encodes and
-        can soften the QR modules, which hurts scan reliability. This serves the
-        exact original pixels. Drop the poster at public/khqr.png.
-      */}
-      {imageFailed ? (
-        <div className="mt-5 flex aspect-[1/1.414] w-full flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-background p-6 text-center">
-          <QrCode className="h-14 w-14 text-muted-foreground" />
-          <p className="text-sm font-medium text-muted-foreground">QR image not found</p>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            Save your KHQR poster to
-            <br />
-            <code className="text-muted-foreground">public/khqr.png</code>
-          </p>
-        </div>
-      ) : (
-        <a
-          href={KHQR_IMAGE_SRC}
-          target="_blank"
-          rel="noreferrer"
-          title="Open full size"
-          className="mt-5 block overflow-hidden rounded-xl bg-white ring-1 ring-border transition-opacity hover:opacity-95"
-        >
-          {/* Fixed aspect box reserves the space so the panel never jumps as
-              the image decodes. object-contain keeps a square crop valid too. */}
-          <img
-            src={KHQR_IMAGE_SRC}
-            alt={`KHQR code for ${DESTINATION_NAME} at ${DESTINATION_BANK}`}
-            className="aspect-[1/1.414] w-full object-contain"
-            onError={() => setImageFailed(true)}
-          />
-        </a>
-      )}
-
-      <dl className="mt-5 divide-y divide-border overflow-hidden rounded-lg border border-border bg-background">
-        <div className="flex items-center justify-between px-3 py-2">
-          <dt className="text-xs uppercase tracking-wider text-muted-foreground">To</dt>
-          <dd className="text-sm font-medium text-foreground">{DESTINATION_NAME}</dd>
-        </div>
-        <div className="flex items-center justify-between px-3 py-2">
-          <dt className="text-xs uppercase tracking-wider text-muted-foreground">Bank</dt>
-          <dd className="text-sm text-foreground/80">{DESTINATION_BANK}</dd>
-        </div>
-        <div className="flex items-center justify-between px-3 py-2">
-          <dt className="text-xs uppercase tracking-wider text-muted-foreground">Amount</dt>
-          <dd className="text-sm font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
-            {formatMoney(DAILY_AMOUNT)}
-          </dd>
-        </div>
-      </dl>
-
-      <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
-        Static KHQR carries no preset amount — enter{' '}
-        <span className="font-medium text-muted-foreground">{formatMoney(DAILY_AMOUNT)}</span>{' '}
-        manually in your banking app.
-      </p>
-    </>
-  );
-}
-
-const PANEL_TITLE = `Transfer ${formatMoney(DAILY_AMOUNT)}`;
-const PANEL_DESCRIPTION = 'Scan with your sending bank app, then log the day below.';
-
-/* Zinc overrides so both variants keep the page's palette rather than the
-   neutral shadcn popover tokens. gap-0 hands spacing back to the mt-* rhythm
-   inside KhqrPanel, which both variants share. */
-const PANEL_CLASSES =
-  'gap-0 overflow-y-auto overscroll-contain border-border bg-card p-6 text-foreground ring-0';
-
-function KhqrDialog({ open, onClose }: KhqrDialogProps) {
-  // Bottom sheet on phones, centered dialog from sm up. Both are Radix under
-  // the hood, so scroll lock, focus trap, focus restore and Escape come free —
-  // none of that is hand-rolled here anymore.
-  const isDesktop = useMediaQuery('(min-width: 40rem)');
-
-  // Radix reports both open and close through onOpenChange; the parent only
-  // needs the close edge, since it owns the flag that opens this.
-  const onOpenChange = (next: boolean) => {
-    if (!next) onClose();
-  };
-
-  if (isDesktop) {
-    return (
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className={`${PANEL_CLASSES} max-h-[90vh] rounded-2xl border`}>
-          <DialogHeader className="gap-1">
-            <DialogTitle className="text-lg font-semibold tracking-tight text-foreground">
-              {PANEL_TITLE}
-            </DialogTitle>
-            <DialogDescription className="text-sm text-muted-foreground">
-              {PANEL_DESCRIPTION}
-            </DialogDescription>
-          </DialogHeader>
-          <KhqrPanel />
-        </DialogContent>
-      </Dialog>
-    );
-  }
-
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="bottom"
-        className={`${PANEL_CLASSES} max-h-[85vh] rounded-t-2xl border-t`}
-      >
-        <SheetHeader className="gap-1 p-0">
-          <SheetTitle className="text-lg font-semibold tracking-tight text-foreground">
-            {PANEL_TITLE}
-          </SheetTitle>
-          <SheetDescription className="text-sm text-muted-foreground">
-            {PANEL_DESCRIPTION}
-          </SheetDescription>
-        </SheetHeader>
-        <KhqrPanel />
-      </SheetContent>
-    </Sheet>
-  );
-}
-
 /* -------------------------------------------------------------------------- */
 /*                                   Page                                     */
 /* -------------------------------------------------------------------------- */
@@ -394,7 +243,6 @@ export default function SavingsPage() {
   const [mounted, setMounted] = useState(false);
   const [completed, setCompleted] = useState<string[]>([]);
   const [today, setToday] = useState<string>('');
-  const [qrOpen, setQrOpen] = useState(false);
 
   // Read browser-only values after the first paint so the server HTML and the
   // initial client render stay byte-identical.
@@ -550,23 +398,14 @@ export default function SavingsPage() {
           </div>
         </section>
 
-        {/* Action grid */}
-        <section className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <button
-            type="button"
-            onClick={() => setQrOpen(true)}
-            className="flex min-h-[64px] items-center justify-center gap-2 rounded-xl border border-border bg-card px-5 py-4 text-sm font-medium text-foreground transition-colors duration-200 hover:border-muted-foreground/40 hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60"
-          >
-            <QrCode className="h-4 w-4 text-muted-foreground" />
-            Transfer via KHQR
-          </button>
-
+        {/* Primary action */}
+        <section className="mt-6">
           <button
             type="button"
             onClick={markToday}
             disabled={!canLog}
             className={[
-              'flex min-h-[64px] items-center justify-center gap-2 rounded-xl px-5 py-4 text-sm font-semibold transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 sm:col-span-2',
+              'flex min-h-[64px] w-full items-center justify-center gap-2 rounded-xl px-5 py-4 text-sm font-semibold transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60',
               canLog
                 ? 'bg-emerald-500 text-emerald-950 hover:bg-emerald-400 active:scale-[0.99]'
                 : 'cursor-not-allowed border border-border bg-card text-muted-foreground',
@@ -665,8 +504,6 @@ export default function SavingsPage() {
           Click any past day to correct it. Progress is stored locally in this browser.
         </p>
       </div>
-
-      <KhqrDialog open={qrOpen} onClose={() => setQrOpen(false)} />
     </main>
   );
 }
