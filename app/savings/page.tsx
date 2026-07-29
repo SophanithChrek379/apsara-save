@@ -5,15 +5,19 @@ import {
   Banknote,
   CalendarCheck2,
   CalendarDays,
+  CalendarRange,
   Check,
+  ChevronDown,
+  CheckCheck,
   Coins,
   Flame,
+  History,
   Layers,
-  Minus,
+  Lock,
   Moon,
   Plane,
   PiggyBank,
-  Plus,
+  RotateCcw,
   Shirt,
   ShieldCheck,
   Sun,
@@ -22,37 +26,48 @@ import {
   Wallet,
 } from 'lucide-react';
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useSystemTheme } from '@/hooks/use-system-theme';
 import { cn } from '@/lib/utils';
 
 /* -------------------------------------------------------------------------- */
 /*                              Storage keys                                  */
-/*  One key per strategy so a corrupt or cleared bucket can never take the     */
-/*  other two down with it.                                                    */
+/*  One vault object holds every year, so a new January needs no migration     */
+/*  and an old year can never be overwritten by the current one.               */
 /* -------------------------------------------------------------------------- */
 
-const DAILY_KEY = 'apsara_daily_2026';
-const CHALLENGE_KEY = 'apsara_challenge_52w';
-const BUCKETS_KEY = 'apsara_monthly_buckets';
+const VAULT_KEY = 'apsara_savings_vault';
 
-/* The tracker first shipped as a daily-only page writing `apsara_savings_2026`.
-   Read that key as a fallback so history logged before the multi-strategy layout
-   is not stranded behind the new name. */
-const LEGACY_DAILY_KEY = 'apsara_savings_2026';
+/* Pre-vault layout: three flat keys, all of them describing 2026 only. They are
+   read once to seed the vault and then left in place as a fallback — deleting a
+   user's only copy of their history to save a few bytes is not a good trade. */
+const LEGACY_DAILY_KEY = 'apsara_daily_2026';
+const LEGACY_DAILY_KEY_V0 = 'apsara_savings_2026';
+const LEGACY_CHALLENGE_KEY = 'apsara_challenge_52w';
+const LEGACY_BUCKETS_KEY = 'apsara_monthly_buckets';
+const LEGACY_YEAR = 2026;
+
 /* Marks that the historical backfill already ran, so unchecking days by hand
    is never undone by a re-seed on the next visit. */
 const SEED_KEY = 'apsara_savings_2026_seeded';
+
+/* Guard rails for year keys read back out of storage. Anything outside this
+   window is hand-mangled or a different app's data, and is dropped. */
+const MIN_YEAR = 2000;
+const MAX_YEAR = 2200;
 
 /* -------------------------------------------------------------------------- */
 /*                     Strategy A — daily $1.25 micro-habit                   */
 /* -------------------------------------------------------------------------- */
 
-const TRACK_START = '2026-01-01';
-const TRACK_END = '2026-12-31';
-const TOTAL_DAYS = 365;
 const DAILY_AMOUNT = 1.25;
-const DAILY_TARGET = TOTAL_DAYS * DAILY_AMOUNT; // 456.25
 
 /* -------------------------------------------------------------------------- */
 /*                    Strategy B — 52-week escalation ladder                  */
@@ -91,8 +106,11 @@ type BucketBalances = Record<BucketId, number>;
 
 /** One payday tops every bucket up to its baseline quota: 70 + 47 + 39 + 39. */
 const PAYDAY_TOTAL = BUCKET_DEFS.reduce((sum, bucket) => sum + bucket.target, 0);
-/** Step for the manual +/- controls, in dollars. */
-const BUCKET_STEP = 1;
+
+/** Quota lookup, so an action can fund one bucket without scanning the defs. */
+const BUCKET_TARGET = Object.fromEntries(
+  BUCKET_DEFS.map((bucket) => [bucket.id, bucket.target]),
+) as Record<BucketId, number>;
 
 /* A factory rather than a shared constant, so a reset can never hand two pieces
    of state the same mutable object. Keys are checked against BucketId. */
@@ -100,11 +118,54 @@ function emptyBuckets(): BucketBalances {
   return { emergency: 0, retirement: 0, trip: 0, clothes: 0 };
 }
 
+function bucketsTotal(balances: BucketBalances): number {
+  return BUCKET_DEFS.reduce((sum, bucket) => sum + balances[bucket.id], 0);
+}
+
+/** True once every bucket has met its quota — the shape a payday drop leaves. */
+function isMonthFunded(balances: BucketBalances): boolean {
+  return BUCKET_DEFS.every((bucket) => balances[bucket.id] >= bucket.target);
+}
+
 /* -------------------------------------------------------------------------- */
-/*                             Combined target                                */
+/*                          Monthly ledger — 12 slots                         */
+/*  Buckets are tracked per calendar month rather than as one running pile,    */
+/*  so a payday drop belongs to the month it was made in and an earlier month  */
+/*  can still be filled in after the fact.                                     */
 /* -------------------------------------------------------------------------- */
 
-const COMBINED_TARGET = DAILY_TARGET + CHALLENGE_TARGET + PAYDAY_TOTAL; // 2081.25
+const MONTHS_PER_YEAR = 12;
+
+/** Index 0 is January. Always exactly twelve entries. */
+type MonthlyLedger = BucketBalances[];
+
+function emptyLedger(): MonthlyLedger {
+  return Array.from({ length: MONTHS_PER_YEAR }, emptyBuckets);
+}
+
+function ledgerTotal(ledger: MonthlyLedger): number {
+  return ledger.reduce((sum, month) => sum + bucketsTotal(month), 0);
+}
+
+/**
+ * Last month that can be written for `year`: the live month while the year is
+ * still running, December once it has closed. Months beyond it have not
+ * happened yet, so they are neither selectable nor writable. A year in the
+ * future can only arrive by hand-editing storage; it is read-only regardless,
+ * so it is treated like a closed one.
+ */
+function lastOpenMonth(year: number, currentYear: number, currentMonth: number): number {
+  return year === currentYear ? currentMonth : MONTHS_PER_YEAR - 1;
+}
+
+/** Copy-on-write for a single month; the other eleven are carried by reference. */
+function writeMonth(
+  ledger: MonthlyLedger,
+  index: number,
+  mutate: (balances: BucketBalances) => BucketBalances,
+): MonthlyLedger {
+  return ledger.map((month, slot) => (slot === index ? mutate(month) : month));
+}
 
 /* -------------------------------------------------------------------------- */
 /*                            Formatting helpers                              */
@@ -113,6 +174,13 @@ const COMBINED_TARGET = DAILY_TARGET + CHALLENGE_TARGET + PAYDAY_TOTAL; // 2081.
 const MONTH_LABELS = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+] as const;
+
+/* Spelled out for the month switcher, where three letters read as an abbreviation
+   of something rather than as a name. */
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
 ] as const;
 
 /* Locale is pinned rather than left to the visitor, because a floating locale
@@ -157,33 +225,105 @@ function formatLongDate(iso: string): string {
   return `${MONTH_LABELS[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
 }
 
-/** Every date string from 2026-01-01 through 2026-12-31, in order. */
-const ALL_DATES: string[] = (() => {
-  const dates: string[] = [];
-  let cursor = fromISODate(TRACK_START);
-  const end = fromISODate(TRACK_END);
+/* -------------------------------------------------------------------------- */
+/*                        Per-year calendar geometry                          */
+/*  Everything length-dependent is derived by walking real Date objects from   */
+/*  Jan 1 to Dec 31, so a leap year yields 366 cells with no special case.     */
+/* -------------------------------------------------------------------------- */
+
+type YearShape = {
+  year: number;
+  startISO: string;
+  endISO: string;
+  /** 365, or 366 in a leap year. */
+  totalDays: number;
+  /** totalDays × $1.25. */
+  dailyTarget: number;
+  /** Every date in the year, ascending. */
+  allDates: string[];
+  /** allDates bucketed into 12 month columns. */
+  datesByMonth: string[][];
+  validDates: Set<string>;
+  /** Tallest month column, so every column can be padded to the same height. */
+  maxMonthLength: number;
+};
+
+/* Building a shape walks ~366 dates. Cached per year so switching tabs, years,
+   or re-rendering never repeats the work. */
+const YEAR_CACHE = new Map<number, YearShape>();
+
+function getYearShape(year: number): YearShape {
+  const cached = YEAR_CACHE.get(year);
+  if (cached) return cached;
+
+  const startISO = `${year}-01-01`;
+  const endISO = `${year}-12-31`;
+
+  const allDates: string[] = [];
+  const end = fromISODate(endISO);
+  let cursor = fromISODate(startISO);
   while (cursor <= end) {
-    dates.push(toISODate(cursor));
+    allDates.push(toISODate(cursor));
     cursor = addDays(cursor, 1);
   }
-  return dates;
-})();
 
-/** ALL_DATES bucketed into 12 month columns. */
-const DATES_BY_MONTH: string[][] = (() => {
-  const months: string[][] = Array.from({ length: 12 }, () => []);
-  for (const iso of ALL_DATES) {
-    months[fromISODate(iso).getMonth()]?.push(iso);
+  const datesByMonth: string[][] = Array.from({ length: 12 }, () => []);
+  for (const iso of allDates) {
+    datesByMonth[fromISODate(iso).getMonth()]?.push(iso);
   }
-  return months;
-})();
 
-const VALID_DATES = new Set(ALL_DATES);
-const MAX_MONTH_LENGTH = Math.max(...DATES_BY_MONTH.map((month) => month.length));
+  const shape: YearShape = {
+    year,
+    startISO,
+    endISO,
+    totalDays: allDates.length,
+    dailyTarget: allDates.length * DAILY_AMOUNT,
+    allDates,
+    datesByMonth,
+    validDates: new Set(allDates),
+    maxMonthLength: Math.max(...datesByMonth.map((month) => month.length)),
+  };
+
+  YEAR_CACHE.set(year, shape);
+  return shape;
+}
+
+/** Combined goal for a single year: daily habit + full ladder + twelve paydays. */
+function combinedTarget(shape: YearShape): number {
+  return shape.dailyTarget + CHALLENGE_TARGET + PAYDAY_TOTAL * MONTHS_PER_YEAR;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                          The pre-mount stand-in                            */
+/*  This route prerenders as static HTML, so any date read while rendering is  */
+/*  the date the *build* ran — a value that stops being true the moment the     */
+/*  calendar rolls over, and would then mismatch on every visit until the next  */
+/*  deploy. So the first render commits to no clock at all: fixed geometry,     */
+/*  and a dash anywhere a year or a month would be named. Both sides of         */
+/*  hydration render exactly this, and `mounted` swaps in the real thing.       */
+/* -------------------------------------------------------------------------- */
+
+/* A leap year, so the matrix is built at its tallest and the real year can only
+   ever drop February's 29th cell — a change inside a column that is shorter
+   than January either way, so the grid never resizes. */
+const SKELETON_SHAPE = getYearShape(2024);
+
+/** Stands in for any label that cannot be known before the clock is read. */
+const PLACEHOLDER = '—';
+
+/**
+ * First calendar day of a ladder week: week 1 opens on Jan 1 and each week
+ * after opens seven days later. Week 52 opens on day 358, so the index is
+ * always inside the year — including in a leap year, where the extra day
+ * simply falls past the end of the ladder.
+ */
+function weekStartISO(shape: YearShape, week: number): string {
+  return shape.allDates[(week - 1) * 7] ?? shape.startISO;
+}
 
 /** Consecutive logged days ending today, or ending yesterday if today is unlogged. */
-function computeDayStreak(logged: Set<string>, today: string): number {
-  if (!VALID_DATES.has(today)) return 0;
+function computeDayStreak(shape: YearShape, logged: Set<string>, today: string): number {
+  if (!shape.validDates.has(today)) return 0;
 
   let cursor = fromISODate(today);
   if (!logged.has(today)) cursor = addDays(cursor, -1);
@@ -210,13 +350,13 @@ function computeWeekStreak(completed: Set<number>): number {
  * Every tracked date from Jan 1 up to and including `iso`.
  * Used to backfill deposits that were made before this app existed.
  */
-function datesThrough(iso: string): string[] {
-  if (VALID_DATES.has(iso)) {
-    return ALL_DATES.slice(0, ALL_DATES.indexOf(iso) + 1);
+function datesThrough(shape: YearShape, iso: string): string[] {
+  if (shape.validDates.has(iso)) {
+    return shape.allDates.slice(0, shape.allDates.indexOf(iso) + 1);
   }
-  // Outside the track: after 2026 means the year is complete, before it means
-  // nothing has been saved yet.
-  return fromISODate(iso) > fromISODate(TRACK_END) ? [...ALL_DATES] : [];
+  // Outside the track: past the end means the year is complete, before the
+  // start means nothing has been saved yet.
+  return fromISODate(iso) > fromISODate(shape.endISO) ? [...shape.allDates] : [];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -224,6 +364,46 @@ function datesThrough(iso: string): string[] {
 /*  Every read is validated. Storage is user-editable and survives deploys,    */
 /*  so stale or hand-mangled data must never be trusted into the totals.       */
 /* -------------------------------------------------------------------------- */
+
+/** One year's three strategies. Years never share objects or interfere. */
+type YearRecord = {
+  daily: string[];
+  challenge: number[];
+  monthly: MonthlyLedger;
+  /** Months whose payday allocation has already been dropped, so it cannot
+      be dropped a second time. Kept apart from the balances because a hand-
+      edited balance that happens to equal the quota is not a payday. */
+  injected: number[];
+};
+
+/** `{ '2026': { daily, challenge, monthly, injected }, '2027': { … } }` */
+type Vault = Record<string, YearRecord>;
+
+function emptyRecord(): YearRecord {
+  return { daily: [], challenge: [], monthly: emptyLedger(), injected: [] };
+}
+
+/* Stable stand-in for a year with nothing saved yet. Frozen and shared so the
+   memos hanging off `record.*` do not re-run on every render of an empty year;
+   the vault itself only ever receives fresh objects from `emptyRecord()`. */
+const EMPTY_RECORD: YearRecord = Object.freeze({
+  daily: Object.freeze([]) as unknown as string[],
+  challenge: Object.freeze([]) as unknown as number[],
+  monthly: Object.freeze(emptyLedger()) as unknown as MonthlyLedger,
+  injected: Object.freeze([]) as unknown as number[],
+});
+
+/* Same idea one level down: the stand-in for a month slot that a hand-mangled
+   ledger left short, so the memo keyed on it does not re-run every render. */
+const EMPTY_BALANCES: BucketBalances = Object.freeze(emptyBuckets());
+
+function isEmptyRecord(record: YearRecord): boolean {
+  return (
+    record.daily.length === 0 &&
+    record.challenge.length === 0 &&
+    ledgerTotal(record.monthly) === 0
+  );
+}
 
 function readStored<T>(key: string, parse: (value: unknown) => T | null): T | null {
   try {
@@ -244,12 +424,15 @@ function writeStored(key: string, value: unknown): void {
   }
 }
 
-function parseDates(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const clean = value.filter(
-    (entry): entry is string => typeof entry === 'string' && VALID_DATES.has(entry),
-  );
-  return Array.from(new Set(clean)).sort();
+/** A date list is only valid against the year it is filed under. */
+function makeDateParser(shape: YearShape) {
+  return (value: unknown): string[] | null => {
+    if (!Array.isArray(value)) return null;
+    const clean = value.filter(
+      (entry): entry is string => typeof entry === 'string' && shape.validDates.has(entry),
+    );
+    return Array.from(new Set(clean)).sort();
+  };
 }
 
 function parseWeeks(value: unknown): number[] | null {
@@ -275,6 +458,113 @@ function parseBuckets(value: unknown): BucketBalances | null {
     }
   }
   return next;
+}
+
+/**
+ * Reads either ledger shape. The current one is an array of twelve balance
+ * objects; the pre-ledger one is a single undated pile, which is filed under
+ * `foldMonth` so the money survives the upgrade rather than being discarded.
+ */
+function parseLedger(value: unknown, foldMonth: number): MonthlyLedger | null {
+  const ledger = emptyLedger();
+
+  if (Array.isArray(value)) {
+    // Extra slots from a hand-edited payload are ignored; missing ones stay zero.
+    for (let month = 0; month < MONTHS_PER_YEAR; month += 1) {
+      ledger[month] = parseBuckets(value[month]) ?? emptyBuckets();
+    }
+    return ledger;
+  }
+
+  const flat = parseBuckets(value);
+  if (!flat) return null;
+  ledger[foldMonth] = flat;
+  return ledger;
+}
+
+function parseMonthIndexes(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const clean = value.filter(
+    (entry): entry is number =>
+      typeof entry === 'number' &&
+      Number.isInteger(entry) &&
+      entry >= 0 &&
+      entry < MONTHS_PER_YEAR,
+  );
+  return Array.from(new Set(clean)).sort((a, b) => a - b);
+}
+
+/** `'2026'` → `2026`; anything else — floats, `'abc'`, out-of-range — → null. */
+function parseYearKey(key: string): number | null {
+  if (!/^\d{4}$/.test(key)) return null;
+  const year = Number(key);
+  return year >= MIN_YEAR && year <= MAX_YEAR ? year : null;
+}
+
+/**
+ * The clock is a parameter rather than a global read, so parsing stays pure and
+ * a pre-ledger balance lands in the month it most likely belongs to: the live
+ * month for the running year, December for a year that has already closed.
+ */
+function makeVaultParser(currentYear: number, currentMonth: number) {
+  return (value: unknown): Vault | null => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+
+    const source = value as Record<string, unknown>;
+    const vault: Vault = {};
+
+    for (const [key, entry] of Object.entries(source)) {
+      const year = parseYearKey(key);
+      if (year === null) continue;
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
+
+      const row = entry as Record<string, unknown>;
+      const foldMonth = lastOpenMonth(year, currentYear, currentMonth);
+      const monthly = parseLedger(row.monthly, foldMonth) ?? emptyLedger();
+
+      // A year whose `daily` is corrupt still keeps its weeks and buckets: each
+      // branch falls back on its own rather than dropping the whole year.
+      vault[key] = {
+        daily: makeDateParser(getYearShape(year))(row.daily) ?? [],
+        challenge: parseWeeks(row.challenge) ?? [],
+        monthly,
+        // Records written before injections were tracked have no list. Any month
+        // already sitting at full quota is taken to have had its payday, which
+        // stops the upgrade itself from handing out a second allocation.
+        injected:
+          parseMonthIndexes(row.injected) ??
+          monthly.flatMap((month, index) => (isMonthFunded(month) ? [index] : [])),
+      };
+    }
+
+    return vault;
+  };
+}
+
+/**
+ * Folds the three pre-vault flat keys into a 2026 record. Returns an empty
+ * vault when none of them hold anything, so a first-time visitor is not given
+ * a phantom 2026 entry in the archive switcher.
+ */
+function migrateLegacyVault(currentYear: number, currentMonth: number): Vault {
+  const shape = getYearShape(LEGACY_YEAR);
+  const parseDates = makeDateParser(shape);
+  const foldMonth = lastOpenMonth(LEGACY_YEAR, currentYear, currentMonth);
+
+  const monthly =
+    readStored(LEGACY_BUCKETS_KEY, (value) => parseLedger(value, foldMonth)) ?? emptyLedger();
+
+  const record: YearRecord = {
+    daily:
+      readStored(LEGACY_DAILY_KEY, parseDates) ??
+      readStored(LEGACY_DAILY_KEY_V0, parseDates) ??
+      [],
+    challenge: readStored(LEGACY_CHALLENGE_KEY, parseWeeks) ?? [],
+    monthly,
+    injected: monthly.flatMap((month, index) => (isMonthFunded(month) ? [index] : [])),
+  };
+
+  return isEmptyRecord(record) ? {} : { [String(LEGACY_YEAR)]: record };
 }
 
 function hasSeeded(): boolean {
@@ -357,7 +647,7 @@ function MetricCard({ icon, label, value, hint, accent = false }: MetricCardProp
   );
 }
 
-/** Label/value pair used for the fixed 2026 parameters and header breakdown. */
+/** Label/value pair used for the year's fixed parameters and header breakdown. */
 function StatLine({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-border bg-muted/40 px-3 py-2.5">
@@ -416,57 +706,196 @@ function PanelHeading({
   );
 }
 
+/** Inline marker on a panel whose data belongs to a year that has closed. */
+function ArchivePill() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+      <Lock className="h-3 w-3" />
+      Read-only
+    </span>
+  );
+}
+
+/**
+ * Stands in for a tab's primary action while a past year is open. Matches the
+ * button's height so switching years never shifts the panel below it.
+ */
+function ArchiveNotice({ year }: { year: number }) {
+  return (
+    <div className="flex min-h-[64px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/30 px-5 py-4 text-sm font-medium text-muted-foreground">
+      <History className="h-4 w-4" />
+      Viewing the {year} archive — check-ins are locked.
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                            Archive year switcher                          */
+/* -------------------------------------------------------------------------- */
+
+/* Shared by both dropdowns so the skeleton and the live trigger cannot drift. */
+const SWITCHER_CLASS =
+  'h-9 gap-2 rounded-lg border-border bg-muted/40 px-3 text-sm font-medium text-foreground hover:bg-muted/60 dark:bg-muted/40 dark:hover:bg-muted/60';
+
+/**
+ * Holds a switcher's box while its value is still unknown. Same height, border
+ * and padding as the real trigger, and a fixed width, so the swap at mount
+ * moves nothing around it.
+ */
+function SwitcherSkeleton({ icon, className }: { icon: ReactNode; className?: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(SWITCHER_CLASS, 'flex items-center text-muted-foreground', className)}
+    >
+      {icon}
+      {PLACEHOLDER}
+      <ChevronDown className="ml-auto h-4 w-4 text-muted-foreground" />
+    </span>
+  );
+}
+
+type YearSwitcherProps = {
+  years: readonly number[];
+  activeYear: number;
+  currentYear: number;
+  onChange: (year: number) => void;
+};
+
+function YearSwitcher({ years, activeYear, currentYear, onChange }: YearSwitcherProps) {
+  return (
+    <Select value={String(activeYear)} onValueChange={(next) => onChange(Number(next))}>
+      <SelectTrigger
+        size="default"
+        aria-label="Tracked year"
+        className={cn(SWITCHER_CLASS, 'tabular-nums')}
+      >
+        <CalendarDays className="h-4 w-4 text-muted-foreground" />
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {years.map((year) => (
+          <SelectItem key={year} value={String(year)} className="tabular-nums">
+            {year}
+            <span className="text-xs text-muted-foreground">
+              {year === currentYear ? 'Current' : 'Archive'}
+            </span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                            Allocation month picker                         */
+/* -------------------------------------------------------------------------- */
+
+type MonthSwitcherProps = {
+  month: number;
+  /** Highest selectable month — later ones have not happened yet. */
+  maxMonth: number;
+  onChange: (month: number) => void;
+};
+
+function MonthSwitcher({ month, maxMonth, onChange }: MonthSwitcherProps) {
+  return (
+    <Select value={String(month)} onValueChange={(next) => onChange(Number(next))}>
+      <SelectTrigger
+        size="default"
+        aria-label="Allocation month"
+        className={SWITCHER_CLASS}
+      >
+        <CalendarRange className="h-4 w-4 text-muted-foreground" />
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {MONTH_NAMES.map((name, index) => (
+          <SelectItem
+            key={name}
+            value={String(index)}
+            // A month the calendar has not reached is offered but not choosable,
+            // so the full year stays visible without inviting a future deposit.
+            disabled={index > maxMonth}
+          >
+            {name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /*                      Tab A — daily micro-habit strategy                    */
 /* -------------------------------------------------------------------------- */
 
 type DailyPanelProps = {
   mounted: boolean;
+  shape: YearShape;
+  readOnly: boolean;
   today: string;
   logged: Set<string>;
   onMarkToday: () => void;
   onToggleDate: (iso: string) => void;
 };
 
-function DailyPanel({ mounted, today, logged, onMarkToday, onToggleDate }: DailyPanelProps) {
+function DailyPanel({
+  mounted,
+  shape,
+  readOnly,
+  today,
+  logged,
+  onMarkToday,
+  onToggleDate,
+}: DailyPanelProps) {
   const count = logged.size;
   const saved = count * DAILY_AMOUNT;
-  const remainingDays = TOTAL_DAYS - count;
+  const remainingDays = shape.totalDays - count;
   const streak = useMemo(
-    () => (today ? computeDayStreak(logged, today) : 0),
-    [logged, today],
+    () => (today ? computeDayStreak(shape, logged, today) : 0),
+    [shape, logged, today],
   );
 
-  const todayInRange = VALID_DATES.has(today);
+  const todayInRange = shape.validDates.has(today);
   const todayLogged = todayInRange && logged.has(today);
-  const canLog = mounted && todayInRange && !todayLogged;
+  const canLog = mounted && !readOnly && todayInRange && !todayLogged;
+
+  /* Pre-mount `shape` is the stand-in, whose year is a fixed constant and must
+     never be printed. Day counts and totals derived from it are deterministic
+     on both sides of hydration, so those stay. */
+  const yearLabel = mounted ? `${shape.year}` : PLACEHOLDER;
 
   const buttonLabel = (() => {
     // Before mount the stored state is unknown, so show the neutral call to
     // action rather than guessing and swapping it a frame later.
     if (!mounted) return `Mark ${formatMoney(DAILY_AMOUNT)} Saved Today`;
-    if (!todayInRange) return 'Outside 2026 Track';
+    if (!todayInRange) return `Outside the ${shape.year} Track`;
     if (todayLogged) return 'Logged for Today';
     return `Mark ${formatMoney(DAILY_AMOUNT)} Saved Today`;
   })();
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Primary action */}
-      <button
-        type="button"
-        onClick={onMarkToday}
-        disabled={!canLog}
-        className={cn(
-          'flex min-h-[64px] w-full items-center justify-center gap-2 rounded-xl px-5 py-4 text-sm font-semibold transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60',
-          canLog
-            ? 'bg-emerald-500 text-emerald-950 hover:bg-emerald-400 active:scale-[0.99]'
-            : 'cursor-not-allowed border border-border bg-card text-muted-foreground',
-        )}
-      >
-        {mounted && todayLogged ? <Check className="h-4 w-4" /> : <Wallet className="h-4 w-4" />}
-        {buttonLabel}
-      </button>
+      {/* Primary action, or the archive marker that replaces it */}
+      {readOnly ? (
+        <ArchiveNotice year={shape.year} />
+      ) : (
+        <button
+          type="button"
+          onClick={onMarkToday}
+          disabled={!canLog}
+          className={cn(
+            'flex min-h-[64px] w-full items-center justify-center gap-2 rounded-xl px-5 py-4 text-sm font-semibold transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60',
+            canLog
+              ? 'bg-emerald-500 text-emerald-950 hover:bg-emerald-400 active:scale-[0.99]'
+              : 'cursor-not-allowed border border-border bg-card text-muted-foreground',
+          )}
+        >
+          {mounted && todayLogged ? <Check className="h-4 w-4" /> : <Wallet className="h-4 w-4" />}
+          {buttonLabel}
+        </button>
+      )}
 
       <Panel>
         <div className="flex flex-wrap items-end justify-between gap-4">
@@ -481,61 +910,71 @@ function DailyPanel({ mounted, today, logged, onMarkToday, onToggleDate }: Daily
           <div className="text-right">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Target</p>
             <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-foreground/80">
-              {formatMoney(DAILY_TARGET)}
+              {formatMoney(shape.dailyTarget)}
             </p>
           </div>
         </div>
 
         <div className="mt-5">
           <ProgressBar
-            percent={(count / TOTAL_DAYS) * 100}
+            percent={(count / shape.totalDays) * 100}
             label="Daily habit progress"
           />
           <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
             <span className="tabular-nums">
-              {((count / TOTAL_DAYS) * 100).toFixed(1)}% complete
+              {((count / shape.totalDays) * 100).toFixed(1)}% complete
             </span>
             <span className="tabular-nums">
-              {count} / {TOTAL_DAYS} days
+              {count} / {shape.totalDays} days
             </span>
           </div>
         </div>
 
-        {/* Fixed 2026 parameters */}
+        {/* Parameters for the year on screen — 366 days in a leap year */}
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatLine label="Start" value={TRACK_START} />
-          <StatLine label="End" value={TRACK_END} />
-          <StatLine label="Total Days" value={`${TOTAL_DAYS}`} />
-          <StatLine label="Target" value={formatMoney(DAILY_TARGET)} />
+          <StatLine label="Start" value={mounted ? shape.startISO : PLACEHOLDER} />
+          <StatLine label="End" value={mounted ? shape.endISO : PLACEHOLDER} />
+          <StatLine label="Total Days" value={`${shape.totalDays}`} />
+          <StatLine label="Target" value={formatMoney(shape.dailyTarget)} />
         </div>
 
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <MetricCard
             icon={<Flame className="h-4 w-4" />}
-            label="Current Streak"
+            label={readOnly ? 'Final Streak' : 'Current Streak'}
             value={`${streak} ${streak === 1 ? 'day' : 'days'}`}
-            hint={streak > 0 ? 'Keep it alive' : 'Log today to start'}
+            hint={
+              readOnly
+                ? `${yearLabel} archive`
+                : streak > 0
+                  ? 'Keep it alive'
+                  : 'Log today to start'
+            }
             accent={streak > 0}
           />
           <MetricCard
             icon={<CalendarCheck2 className="h-4 w-4" />}
             label="Days Logged"
             value={`${count}`}
-            hint={`of ${TOTAL_DAYS} days`}
+            hint={`of ${shape.totalDays} days`}
           />
           <MetricCard
             icon={<CalendarDays className="h-4 w-4" />}
-            label="Days Remaining"
+            label={readOnly ? 'Days Missed' : 'Days Remaining'}
             value={`${remainingDays}`}
-            hint={`${formatMoney(remainingDays * DAILY_AMOUNT)} to go`}
+            hint={`${formatMoney(remainingDays * DAILY_AMOUNT)} ${readOnly ? 'unsaved' : 'to go'}`}
           />
         </div>
       </Panel>
 
-      {/* 365-day contribution matrix — 12 month columns */}
+      {/* Contribution matrix — 12 month columns, one cell per day of the year */}
       <Panel>
-        <PanelHeading icon={<Target className="h-4 w-4" />} title="2026 Contribution Matrix">
+        <PanelHeading
+          icon={<Target className="h-4 w-4" />}
+          title={`${yearLabel} Contribution Matrix`}
+        >
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {readOnly ? <ArchivePill /> : null}
             <span className="h-2.5 w-2.5 rounded-[2px] bg-muted" />
             <span>Empty</span>
             <span className="ml-1 h-2.5 w-2.5 rounded-[2px] bg-emerald-500" />
@@ -547,13 +986,13 @@ function DailyPanel({ mounted, today, logged, onMarkToday, onToggleDate }: Daily
           {/* Fixed cell sizing + fixed row count keeps the grid height stable
               across every render, so hydration causes no layout shift. */}
           <div className="mx-auto grid w-fit grid-cols-12 gap-x-3">
-            {DATES_BY_MONTH.map((monthDates, monthIndex) => (
+            {shape.datesByMonth.map((monthDates, monthIndex) => (
               <div key={MONTH_LABELS[monthIndex]} className="flex flex-col items-center">
                 <span className="mb-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                   {MONTH_LABELS[monthIndex]}
                 </span>
                 <div className="flex flex-col gap-[3px]">
-                  {Array.from({ length: MAX_MONTH_LENGTH }).map((_, dayIndex) => {
+                  {Array.from({ length: shape.maxMonthLength }).map((_, dayIndex) => {
                     const iso = monthDates[dayIndex];
 
                     // Spacer keeps every column the same height (31 rows).
@@ -571,8 +1010,9 @@ function DailyPanel({ mounted, today, logged, onMarkToday, onToggleDate }: Daily
                     const isToday = iso === today;
                     // ISO strings compare lexicographically, so this is a plain
                     // date comparison. Before mount `today` is '' and nothing is
-                    // editable, which keeps the SSR markup identical.
-                    const isEditable = mounted && today !== '' && iso <= today;
+                    // editable, which keeps the SSR markup identical. A closed
+                    // year is never editable, however far in the past it is.
+                    const isEditable = mounted && !readOnly && today !== '' && iso <= today;
 
                     const label = `${formatLongDate(iso)} — ${
                       isLogged ? `${formatMoney(DAILY_AMOUNT)} saved` : 'not logged'
@@ -609,7 +1049,9 @@ function DailyPanel({ mounted, today, logged, onMarkToday, onToggleDate }: Daily
         </div>
 
         <p className="mt-5 text-center text-xs text-muted-foreground">
-          Click any past day to correct it. Future days stay locked.
+          {readOnly
+            ? `${yearLabel} has closed — every day is shown exactly as it was logged.`
+            : 'Click any past day to correct it. Future days stay locked.'}
         </p>
       </Panel>
     </div>
@@ -622,15 +1064,44 @@ function DailyPanel({ mounted, today, logged, onMarkToday, onToggleDate }: Daily
 
 type ChallengePanelProps = {
   mounted: boolean;
+  shape: YearShape;
+  readOnly: boolean;
+  today: string;
   completed: Set<number>;
   saved: number;
   onToggleWeek: (week: number) => void;
 };
 
-function ChallengePanel({ mounted, completed, saved, onToggleWeek }: ChallengePanelProps) {
+function ChallengePanel({
+  mounted,
+  shape,
+  readOnly,
+  today,
+  completed,
+  saved,
+  onToggleWeek,
+}: ChallengePanelProps) {
   const streak = useMemo(() => computeWeekStreak(completed), [completed]);
   const remaining = CHALLENGE_TARGET - saved;
   const percent = (saved / CHALLENGE_TARGET) * 100;
+
+  /* How far the ladder has opened. Week starts are ascending, so the count of
+     weeks already begun is also the highest checkable week number. A closed
+     year opens nothing; before mount `today` is '' and nothing opens either. */
+  const openWeeks = useMemo(() => {
+    if (!mounted || readOnly || today === '') return 0;
+    let opened = 0;
+    for (const week of ALL_WEEKS) {
+      if (weekStartISO(shape, week) <= today) opened += 1;
+    }
+    return opened;
+  }, [mounted, readOnly, today, shape]);
+
+  /* A rung's opening date is only nameable once the real year is in hand: an
+     archive has no opening date left to wait for, and before mount the year
+     itself is a stand-in. */
+  const showOpensOn = mounted && !readOnly;
+  const yearLabel = mounted ? `${shape.year}` : PLACEHOLDER;
 
   return (
     <div className="flex flex-col gap-5">
@@ -667,9 +1138,15 @@ function ChallengePanel({ mounted, completed, saved, onToggleWeek }: ChallengePa
         <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <MetricCard
             icon={<Flame className="h-4 w-4" />}
-            label="Current Streak"
+            label={readOnly ? 'Final Streak' : 'Current Streak'}
             value={`${streak} ${streak === 1 ? 'week' : 'weeks'}`}
-            hint={streak > 0 ? 'Ladder is climbing' : 'Check a week to start'}
+            hint={
+              readOnly
+                ? `${yearLabel} archive`
+                : streak > 0
+                  ? 'Ladder is climbing'
+                  : 'Check a week to start'
+            }
             accent={streak > 0}
           />
           <MetricCard
@@ -690,9 +1167,12 @@ function ChallengePanel({ mounted, completed, saved, onToggleWeek }: ChallengePa
       {/* Check-in grid — one tile per week, tap to toggle */}
       <Panel>
         <PanelHeading icon={<TrendingUp className="h-4 w-4" />} title="Weekly Escalation Ladder">
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {formatMoney(weekAmount(1))} → {formatMoney(weekAmount(TOTAL_WEEKS))}
-          </span>
+          <div className="flex items-center gap-2">
+            {readOnly ? <ArchivePill /> : null}
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {formatMoney(weekAmount(1))} → {formatMoney(weekAmount(TOTAL_WEEKS))}
+            </span>
+          </div>
         </PanelHeading>
 
         <div className="mt-5 grid grid-cols-4 gap-2 sm:grid-cols-6 lg:grid-cols-8">
@@ -700,6 +1180,45 @@ function ChallengePanel({ mounted, completed, saved, onToggleWeek }: ChallengePa
             const amount = weekAmount(week);
             // Before mount nothing reads as complete, so server and client agree.
             const isDone = mounted && completed.has(week);
+            const isOpen = week <= openWeeks;
+            const opensOn = weekStartISO(shape, week);
+
+            const label = `Week ${week} — ${formatMoney(amount)} — ${
+              isDone ? 'completed' : 'not completed'
+            }`;
+            const appearance = cn(
+              'flex min-h-[62px] flex-col items-center justify-center gap-0.5 rounded-lg border transition-all duration-200',
+              isDone
+                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:border-emerald-500/30 dark:text-emerald-300'
+                : 'border-border bg-muted/40 text-muted-foreground',
+            );
+            const body = (
+              <>
+                <span className="text-[10px] font-medium uppercase tracking-wider">
+                  W{week}
+                </span>
+                <span className="text-sm font-semibold tabular-nums">${amount}</span>
+              </>
+            );
+
+            // A week that has not begun — or any week of a closed year — is
+            // rendered flat, matching how the daily matrix locks future days.
+            if (!isOpen) {
+              return (
+                <div
+                  key={week}
+                  title={
+                    showOpensOn
+                      ? `Week ${week} · ${formatMoney(amount)} · opens ${formatLongDate(opensOn)}`
+                      : `Week ${week} · ${formatMoney(amount)}`
+                  }
+                  aria-label={label}
+                  className={cn(appearance, !isDone && 'opacity-60')}
+                >
+                  {body}
+                </div>
+              );
+            }
 
             return (
               <button
@@ -707,25 +1226,25 @@ function ChallengePanel({ mounted, completed, saved, onToggleWeek }: ChallengePa
                 type="button"
                 onClick={() => onToggleWeek(week)}
                 aria-pressed={isDone}
-                aria-label={`Week ${week} — ${formatMoney(amount)} — ${
-                  isDone ? 'completed' : 'not completed'
-                }`}
+                aria-label={label}
                 title={`Week ${week} · ${formatMoney(amount)}`}
                 className={cn(
-                  'flex min-h-[62px] flex-col items-center justify-center gap-0.5 rounded-lg border transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 active:scale-[0.97]',
-                  isDone
-                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:border-emerald-500/30 dark:text-emerald-300'
-                    : 'border-border bg-muted/40 text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground',
+                  appearance,
+                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 active:scale-[0.97]',
+                  !isDone && 'hover:border-muted-foreground/40 hover:text-foreground',
                 )}
               >
-                <span className="text-[10px] font-medium uppercase tracking-wider">
-                  W{week}
-                </span>
-                <span className="text-sm font-semibold tabular-nums">${amount}</span>
+                {body}
               </button>
             );
           })}
         </div>
+
+        <p className="mt-5 text-center text-xs text-muted-foreground">
+          {readOnly
+            ? `${yearLabel} has closed — the ladder is shown exactly as it was checked off.`
+            : 'Weeks unlock on the Monday-equivalent day they begin. Future rungs stay locked.'}
+        </p>
       </Panel>
     </div>
   );
@@ -736,33 +1255,104 @@ function ChallengePanel({ mounted, completed, saved, onToggleWeek }: ChallengePa
 /* -------------------------------------------------------------------------- */
 
 type BucketsPanelProps = {
+  mounted: boolean;
+  year: number;
+  readOnly: boolean;
+  /** Month on screen, 0 = January. */
+  month: number;
+  /** Highest month the calendar has reached for this year. */
+  maxMonth: number;
+  onMonthChange: (month: number) => void;
+  /** Balances for `month` alone. */
   balances: BucketBalances;
-  saved: number;
-  onAdjust: (id: BucketId, delta: number) => void;
+  monthSaved: number;
+  /** All twelve months together, for context under the month figure. */
+  yearSaved: number;
+  /** Whether `month` has already taken its one payday drop. */
+  injected: boolean;
+  onFund: (id: BucketId) => void;
+  onReset: (id: BucketId) => void;
   onPayday: () => void;
 };
 
-function BucketsPanel({ balances, saved, onAdjust, onPayday }: BucketsPanelProps) {
+function BucketsPanel({
+  mounted,
+  year,
+  readOnly,
+  month,
+  maxMonth,
+  onMonthChange,
+  balances,
+  monthSaved,
+  yearSaved,
+  injected,
+  onFund,
+  onReset,
+  onPayday,
+}: BucketsPanelProps) {
+  /* Both the month and the year are clock-derived, so neither can be named
+     until mount — a statically built page would otherwise ship the build's
+     month and disagree with the browser from the next month onwards. */
+  const monthName = mounted ? MONTH_NAMES[month] : PLACEHOLDER;
+  const monthAbbr = mounted ? MONTH_LABELS[month] : PLACEHOLDER;
+  const yearLabel = mounted ? `${year}` : PLACEHOLDER;
+
   return (
     <div className="flex flex-col gap-5">
-      {/* Master allocation trigger */}
-      <button
-        type="button"
-        onClick={onPayday}
-        className="flex min-h-[64px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 py-4 text-sm font-semibold text-emerald-950 transition-all duration-200 hover:bg-emerald-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 active:scale-[0.99]"
-      >
-        <Banknote className="h-4 w-4" />
-        Inject Payday Allocation ({formatMoney(PAYDAY_TOTAL)})
-      </button>
+      {/* Which month the whole tab is pointed at */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <Layers className="h-4 w-4 text-muted-foreground" />
+          Monthly
+          <span className="text-muted-foreground">· {monthName} {yearLabel}</span>
+        </h2>
+        {mounted ? (
+          <MonthSwitcher month={month} maxMonth={maxMonth} onChange={onMonthChange} />
+        ) : (
+          <SwitcherSkeleton
+            icon={<CalendarRange className="h-4 w-4 text-muted-foreground" />}
+            className="w-[9.5rem]"
+          />
+        )}
+      </div>
+
+      {/* Master allocation trigger, or the archive marker that replaces it */}
+      {readOnly ? (
+        <ArchiveNotice year={year} />
+      ) : (
+        <button
+          type="button"
+          onClick={onPayday}
+          // Held shut until mount, like the daily button: before that the month
+          // it would file the drop against has not been named yet.
+          disabled={!mounted || injected}
+          aria-label={
+            injected
+              ? `${monthName} payday allocation already applied`
+              : `Inject the ${monthName} payday allocation of ${formatMoney(PAYDAY_TOTAL)}`
+          }
+          className={cn(
+            'flex min-h-[64px] w-full items-center justify-center gap-2 rounded-xl px-5 py-4 text-sm font-semibold transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60',
+            injected
+              ? 'cursor-not-allowed border border-border bg-card text-muted-foreground'
+              : 'bg-emerald-500 text-emerald-950 hover:bg-emerald-400 active:scale-[0.99]',
+          )}
+        >
+          {injected ? <Check className="h-4 w-4" /> : <Banknote className="h-4 w-4" />}
+          {injected
+            ? `${monthName} Allocation Applied`
+            : `Inject ${monthName} Allocation (${formatMoney(PAYDAY_TOTAL)})`}
+        </button>
+      )}
 
       <Panel>
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Buckets Balance
+              Monthly Balance
             </p>
             <p className="mt-1 text-3xl font-semibold tabular-nums tracking-tight text-emerald-600 dark:text-emerald-400 sm:text-4xl">
-              {formatMoney(saved)}
+              {formatMoney(monthSaved)}
             </p>
           </div>
           <div className="text-right">
@@ -777,13 +1367,25 @@ function BucketsPanel({ balances, saved, onAdjust, onPayday }: BucketsPanelProps
 
         <div className="mt-5">
           <ProgressBar
-            percent={(saved / PAYDAY_TOTAL) * 100}
-            label="Monthly bucket allocation progress"
+            percent={(monthSaved / PAYDAY_TOTAL) * 100}
+            label={`${monthName} bucket allocation progress`}
           />
           <p className="mt-2 text-xs text-muted-foreground">
-            One tap distributes each bucket&apos;s fixed baseline quota in a single concurrent
-            drop.
+            {readOnly
+              ? `Closing balances carried by the ${monthName} ${yearLabel} buckets.`
+              : injected
+                ? `${monthName} has taken its allocation — one payday drop per month.`
+                : "One tap distributes each bucket's fixed baseline quota in a single concurrent drop."}
           </p>
+        </div>
+
+        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <StatLine label={`${monthAbbr} Saved`} value={formatMoney(monthSaved)} />
+          <StatLine label={`${yearLabel} To Date`} value={formatMoney(yearSaved)} />
+          <StatLine
+            label="Yearly Quota"
+            value={formatMoney(PAYDAY_TOTAL * MONTHS_PER_YEAR)}
+          />
         </div>
       </Panel>
 
@@ -840,30 +1442,42 @@ function BucketsPanel({ balances, saved, onAdjust, onPayday }: BucketsPanelProps
                 </div>
               </div>
 
-              {/* Independent granular controls */}
+              {/* Per-bucket controls — hidden once the year closes.
+                  The pair is deliberately not a stepper: a bucket is either
+                  settled for the month or it is not, so the two actions are
+                  "meet the quota" and "clear the month". */}
               <div className="flex items-center justify-between gap-3">
                 <span className="text-xs text-muted-foreground tabular-nums">
                   {percent.toFixed(0)}% of target
                 </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onAdjust(id, -BUCKET_STEP)}
-                    disabled={balance <= 0}
-                    aria-label={`Remove ${formatMoney(BUCKET_STEP)} from ${label}`}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-muted/50 text-foreground/80 transition-colors hover:border-muted-foreground/40 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border"
-                  >
-                    <Minus className="h-4 w-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onAdjust(id, BUCKET_STEP)}
-                    aria-label={`Add ${formatMoney(BUCKET_STEP)} to ${label}`}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-500/40 dark:border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 transition-colors hover:bg-emerald-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </button>
-                </div>
+                {readOnly ? (
+                  <ArchivePill />
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onReset(id)}
+                      disabled={!mounted || balance <= 0}
+                      aria-label={`Clear ${label} for ${monthName}`}
+                      title={`Clear ${label} back to ${formatMoney(0)}`}
+                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-border bg-muted/50 px-3 text-xs font-medium text-foreground/80 transition-colors hover:border-muted-foreground/40 hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Reset
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onFund(id)}
+                      disabled={!mounted || funded}
+                      aria-label={`Mark ${label} funded for ${monthName}`}
+                      title={`Fund ${label} to its ${formatMoney(target)} quota`}
+                      className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-emerald-500/40 dark:border-emerald-500/30 bg-emerald-500/10 px-3 text-xs font-medium text-emerald-600 dark:text-emerald-400 transition-colors hover:bg-emerald-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-emerald-500/10"
+                    >
+                      <CheckCheck className="h-3.5 w-3.5" />
+                      Done
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -906,6 +1520,14 @@ const TRIGGER_CLASS = cn(
 /*                                   Page                                     */
 /* -------------------------------------------------------------------------- */
 
+/* Plausible opening values, not a source of truth. This module is evaluated at
+   build time for the prerender, so these can be a year or more out of date —
+   nothing derived from them reaches the markup before `mounted`, and the mount
+   effect replaces all four from the browser's own clock. */
+const BOOTSTRAP_NOW = new Date();
+const BOOTSTRAP_YEAR = BOOTSTRAP_NOW.getFullYear();
+const BOOTSTRAP_MONTH = BOOTSTRAP_NOW.getMonth();
+
 export default function SavingsPage() {
   /* Gate on `mounted` so the server render and the hydrating client render are
      byte-identical: stored values are only read afterwards, which rules out the
@@ -913,107 +1535,249 @@ export default function SavingsPage() {
   const [mounted, setMounted] = useState(false);
   const [tab, setTab] = useState<TabId>('daily');
 
-  const [dailyDates, setDailyDates] = useState<string[]>([]);
-  const [weeks, setWeeks] = useState<number[]>([]);
-  const [buckets, setBuckets] = useState<BucketBalances>(emptyBuckets);
+  const [vault, setVault] = useState<Vault>({});
+  const [currentYear, setCurrentYear] = useState(BOOTSTRAP_YEAR);
+  const [activeYear, setActiveYear] = useState(BOOTSTRAP_YEAR);
   const [today, setToday] = useState<string>('');
+  /* The real calendar month, and the one the Monthly tab is pointed at. They
+     start equal, and the picker only ever moves the second one backwards. */
+  const [currentMonth, setCurrentMonth] = useState(BOOTSTRAP_MONTH);
+  const [activeMonth, setActiveMonth] = useState(BOOTSTRAP_MONTH);
 
   useEffect(() => {
-    const todayISO = toISODate(new Date());
-    const storedDaily =
-      readStored(DAILY_KEY, parseDates) ?? readStored(LEGACY_DAILY_KEY, parseDates) ?? [];
+    const now = new Date();
+    const todayISO = toISODate(now);
+    const year = now.getFullYear();
+    const month = now.getMonth();
+
+    const stored =
+      readStored(VAULT_KEY, makeVaultParser(year, month)) ?? migrateLegacyVault(year, month);
 
     // Saving began on 2026-01-01, before this tracker existed. On the very first
-    // visit, backfill every day through today so the app matches the real
-    // deposit history. Runs once — see SEED_KEY.
+    // visit, backfill every day of that year through today so the app matches
+    // the real deposit history. Runs once — see SEED_KEY.
     if (hasSeeded()) {
-      setDailyDates(storedDaily);
+      setVault(stored);
     } else {
-      setDailyDates(Array.from(new Set([...storedDaily, ...datesThrough(todayISO)])).sort());
+      const key = String(LEGACY_YEAR);
+      const record = stored[key] ?? emptyRecord();
+      const backfilled = datesThrough(getYearShape(LEGACY_YEAR), todayISO);
+      setVault({
+        ...stored,
+        [key]: {
+          ...record,
+          daily: Array.from(new Set([...record.daily, ...backfilled])).sort(),
+        },
+      });
     }
 
-    setWeeks(readStored(CHALLENGE_KEY, parseWeeks) ?? []);
-    setBuckets(readStored(BUCKETS_KEY, parseBuckets) ?? emptyBuckets());
+    setCurrentYear(year);
+    setActiveYear(year);
+    setCurrentMonth(month);
+    setActiveMonth(month);
     setToday(todayISO);
     setMounted(true);
   }, []);
 
   /* Persist only after hydration, otherwise the empty initial state would
      overwrite whatever is already stored. The seed flag is written from the same
-     effect as the daily list so a backfill and its marker land together. */
+     effect as the vault so a backfill and its marker land together. */
   useEffect(() => {
     if (!mounted) return;
-    writeStored(DAILY_KEY, dailyDates);
+    writeStored(VAULT_KEY, vault);
     try {
       window.localStorage.setItem(SEED_KEY, '1');
     } catch {
       // Non-fatal: the seed still applies to this session.
     }
-  }, [dailyDates, mounted]);
+  }, [vault, mounted]);
 
-  useEffect(() => {
-    if (!mounted) return;
-    writeStored(CHALLENGE_KEY, weeks);
-  }, [weeks, mounted]);
+  /* ---------------------------- Active year view --------------------------- */
 
-  useEffect(() => {
-    if (!mounted) return;
-    writeStored(BUCKETS_KEY, buckets);
-  }, [buckets, mounted]);
+  const activeKey = String(activeYear);
+  /* The real calendar of the selected year, which every action is checked
+     against, and the geometry the panels draw — the stand-in until the clock
+     has actually been read. */
+  const activeShape = useMemo(() => getYearShape(activeYear), [activeYear]);
+  const shape = mounted ? activeShape : SKELETON_SHAPE;
+  /* Anything that is not the year the clock is in is history: the panels render
+     it in full but refuse every check-in. */
+  const readOnly = activeYear !== currentYear;
 
-  const loggedSet = useMemo(() => new Set(dailyDates), [dailyDates]);
-  const weekSet = useMemo(() => new Set(weeks), [weeks]);
+  const record = vault[activeKey] ?? EMPTY_RECORD;
+
+  /* Highest month that can hold an allocation for the year on screen. The picker
+     stops here, and every write is checked against it, so a deposit can never be
+     filed against a month the calendar has not reached. */
+  const maxMonth = lastOpenMonth(activeYear, currentYear, currentMonth);
+  const monthLocked = readOnly || activeMonth > maxMonth;
+
+  /** Years held in the vault plus the live one, newest first. */
+  const years = useMemo(() => {
+    const found = new Set<number>([currentYear]);
+    for (const key of Object.keys(vault)) {
+      const year = parseYearKey(key);
+      if (year !== null) found.add(year);
+    }
+    return Array.from(found).sort((a, b) => b - a);
+  }, [vault, currentYear]);
+
+  const loggedSet = useMemo(() => new Set(record.daily), [record.daily]);
+  const weekSet = useMemo(() => new Set(record.challenge), [record.challenge]);
 
   /* ------------------------------ Aggregates ----------------------------- */
 
-  const dailySaved = dailyDates.length * DAILY_AMOUNT;
+  const dailySaved = record.daily.length * DAILY_AMOUNT;
   const challengeSaved = useMemo(
-    () => weeks.reduce((sum, week) => sum + weekAmount(week), 0),
-    [weeks],
+    () => record.challenge.reduce((sum, week) => sum + weekAmount(week), 0),
+    [record.challenge],
   );
-  const bucketsSaved = useMemo(
-    () => BUCKET_DEFS.reduce((sum, bucket) => sum + buckets[bucket.id], 0),
-    [buckets],
-  );
+  /* The whole year for the header, the picked month for the tab. */
+  const bucketsSaved = useMemo(() => ledgerTotal(record.monthly), [record.monthly]);
+  const monthBalances = record.monthly[activeMonth] ?? EMPTY_BALANCES;
+  const monthSaved = useMemo(() => bucketsTotal(monthBalances), [monthBalances]);
   const netWealth = dailySaved + challengeSaved + bucketsSaved;
+  const yearTarget = combinedTarget(shape);
 
   /* ------------------------------- Actions ------------------------------- */
 
+  /* Single write path into the vault. Untouched years are carried through by
+     reference, so editing 2027 can never rewrite 2026. */
+  const updateActiveYear = useCallback(
+    (mutate: (record: YearRecord) => YearRecord) => {
+      if (readOnly) return;
+      setVault((prev) => {
+        const current = prev[activeKey] ?? emptyRecord();
+        const next = mutate(current);
+        // A mutation that declines to change anything — a second payday drop on
+        // a month that already had one — leaves the vault identity untouched,
+        // so it triggers neither a re-render nor a write.
+        return next === current ? prev : { ...prev, [activeKey]: next };
+      });
+    },
+    [activeKey, readOnly],
+  );
+
   const markToday = useCallback(() => {
-    if (!VALID_DATES.has(today)) return;
-    setDailyDates((prev) => (prev.includes(today) ? prev : [...prev, today].sort()));
-  }, [today]);
+    if (!activeShape.validDates.has(today)) return;
+    updateActiveYear((record) => ({
+      ...record,
+      daily: record.daily.includes(today) ? record.daily : [...record.daily, today].sort(),
+    }));
+  }, [activeShape, today, updateActiveYear]);
 
   // Correcting history: a backfilled day that was actually missed can be
   // unchecked, and a forgotten one checked. Future days stay untouchable.
-  const toggleDate = useCallback((iso: string) => {
-    setDailyDates((prev) =>
-      prev.includes(iso) ? prev.filter((entry) => entry !== iso) : [...prev, iso].sort(),
-    );
-  }, []);
+  const toggleDate = useCallback(
+    (iso: string) => {
+      if (!activeShape.validDates.has(iso) || today === '' || iso > today) return;
+      updateActiveYear((record) => ({
+        ...record,
+        daily: record.daily.includes(iso)
+          ? record.daily.filter((entry) => entry !== iso)
+          : [...record.daily, iso].sort(),
+      }));
+    },
+    [activeShape, today, updateActiveYear],
+  );
 
-  const toggleWeek = useCallback((week: number) => {
-    setWeeks((prev) =>
-      prev.includes(week)
-        ? prev.filter((entry) => entry !== week)
-        : [...prev, week].sort((a, b) => a - b),
-    );
-  }, []);
+  const toggleWeek = useCallback(
+    (week: number) => {
+      // A rung that has not opened yet cannot be checked, mirroring the matrix.
+      if (today === '' || weekStartISO(activeShape, week) > today) return;
+      updateActiveYear((record) => ({
+        ...record,
+        challenge: record.challenge.includes(week)
+          ? record.challenge.filter((entry) => entry !== week)
+          : [...record.challenge, week].sort((a, b) => a - b),
+      }));
+    },
+    [activeShape, today, updateActiveYear],
+  );
 
-  const adjustBucket = useCallback((id: BucketId, delta: number) => {
-    // Clamped at zero: a bucket can be drawn down to empty but never negative.
-    setBuckets((prev) => ({ ...prev, [id]: Math.max(0, prev[id] + delta) }));
-  }, []);
+  /** Settle one bucket for the picked month by topping it up to its quota. */
+  const fundBucket = useCallback(
+    (id: BucketId) => {
+      if (monthLocked) return;
+      updateActiveYear((record) => {
+        const balance = record.monthly[activeMonth][id];
+        // A month migrated in above its quota keeps the excess rather than
+        // being trimmed back down to the baseline.
+        if (balance >= BUCKET_TARGET[id]) return record;
+        return {
+          ...record,
+          monthly: writeMonth(record.monthly, activeMonth, (month) => ({
+            ...month,
+            [id]: BUCKET_TARGET[id],
+          })),
+        };
+      });
+    },
+    [activeMonth, monthLocked, updateActiveYear],
+  );
+
+  /** Clear one bucket for the picked month, undoing a mistaken entry. */
+  const resetBucket = useCallback(
+    (id: BucketId) => {
+      if (monthLocked) return;
+      updateActiveYear((record) => {
+        if (record.monthly[activeMonth][id] === 0) return record;
+        const monthly = writeMonth(record.monthly, activeMonth, (month) => ({
+          ...month,
+          [id]: 0,
+        }));
+        // Emptying the last bucket reopens the month for a fresh payday drop;
+        // without this, a month reset by hand could never be re-allocated.
+        const reopened = bucketsTotal(monthly[activeMonth]) === 0;
+        return {
+          ...record,
+          monthly,
+          injected: reopened
+            ? record.injected.filter((entry) => entry !== activeMonth)
+            : record.injected,
+        };
+      });
+    },
+    [activeMonth, monthLocked, updateActiveYear],
+  );
 
   const injectPayday = useCallback(() => {
-    setBuckets((prev) => {
-      const next = emptyBuckets();
-      for (const bucket of BUCKET_DEFS) {
-        next[bucket.id] = prev[bucket.id] + bucket.target;
-      }
-      return next;
+    if (monthLocked) return;
+    updateActiveYear((record) => {
+      // One drop per calendar month. Returning the record untouched is what
+      // makes a second tap — or a double-click — a no-op rather than a doubling.
+      if (record.injected.includes(activeMonth)) return record;
+      return {
+        ...record,
+        monthly: writeMonth(record.monthly, activeMonth, (month) => {
+          const next = emptyBuckets();
+          for (const bucket of BUCKET_DEFS) {
+            next[bucket.id] = month[bucket.id] + bucket.target;
+          }
+          return next;
+        }),
+        injected: [...record.injected, activeMonth].sort((a, b) => a - b),
+      };
     });
-  }, []);
+  }, [activeMonth, monthLocked, updateActiveYear]);
+
+  /* Switching year re-points the month picker at that year's last open month,
+     so an archive opens on December and the live year on the current month. */
+  const changeYear = useCallback(
+    (year: number) => {
+      setActiveYear(year);
+      setActiveMonth(lastOpenMonth(year, currentYear, currentMonth));
+    },
+    [currentYear, currentMonth],
+  );
+
+  const changeMonth = useCallback(
+    (month: number) => {
+      if (month < 0 || month > maxMonth) return;
+      setActiveMonth(month);
+    },
+    [maxMonth],
+  );
 
   return (
     <main className="min-h-screen bg-background px-4 py-10 text-foreground antialiased sm:px-6 sm:py-14">
@@ -1026,36 +1790,53 @@ export default function SavingsPage() {
             </p>
             <ThemeIndicator />
           </div>
-          {/* Clipped-text gradient has to be stated per palette: the dark ramp
-              would be invisible against a light background. */}
-          <h1 className="mt-2 bg-gradient-to-r from-zinc-900 via-zinc-700 to-emerald-600 bg-clip-text text-4xl font-semibold tracking-tight text-transparent dark:from-white dark:via-zinc-200 dark:to-emerald-300 sm:text-5xl">
-            Apsara Save
-          </h1>
+
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+            {/* Clipped-text gradient has to be stated per palette: the dark ramp
+                would be invisible against a light background. */}
+            <h1 className="bg-gradient-to-r from-zinc-900 via-zinc-700 to-emerald-600 bg-clip-text text-4xl font-semibold tracking-tight text-transparent dark:from-white dark:via-zinc-200 dark:to-emerald-300 sm:text-5xl">
+              Apsara Save
+            </h1>
+            {mounted ? (
+              <YearSwitcher
+                years={years}
+                activeYear={activeYear}
+                currentYear={currentYear}
+                onChange={changeYear}
+              />
+            ) : (
+              <SwitcherSkeleton
+                icon={<CalendarDays className="h-4 w-4 text-muted-foreground" />}
+                className="w-[7rem]"
+              />
+            )}
+          </div>
 
           <div className="mt-7 rounded-2xl border border-border bg-card p-5 sm:p-6">
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
                 <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
                   <Coins className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-                  Net Wealth Saved
+                  Net Wealth Saved · {mounted ? activeYear : PLACEHOLDER}
                 </p>
                 <p className="mt-1.5 text-4xl font-semibold tabular-nums tracking-tight text-emerald-600 dark:text-emerald-400 sm:text-5xl">
                   {formatMoney(netWealth)}
                 </p>
               </div>
               <div className="text-right">
-                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                <p className="flex items-center justify-end gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  {readOnly ? <ArchivePill /> : null}
                   Combined Target
                 </p>
                 <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-foreground/80">
-                  {formatMoney(COMBINED_TARGET)}
+                  {formatMoney(yearTarget)}
                 </p>
               </div>
             </div>
 
             <div className="mt-5">
               <ProgressBar
-                percent={(netWealth / COMBINED_TARGET) * 100}
+                percent={(netWealth / yearTarget) * 100}
                 label="Net wealth progress"
               />
             </div>
@@ -1064,7 +1845,7 @@ export default function SavingsPage() {
             <div className="mt-5 grid grid-cols-3 gap-3">
               <StatLine label="Daily $1.25" value={formatMoney(dailySaved)} />
               <StatLine label="52-Week" value={formatMoney(challengeSaved)} />
-              <StatLine label="Buckets" value={formatMoney(bucketsSaved)} />
+              <StatLine label="Monthly" value={formatMoney(bucketsSaved)} />
             </div>
           </div>
         </header>
@@ -1089,6 +1870,8 @@ export default function SavingsPage() {
           <TabsContent value="daily">
             <DailyPanel
               mounted={mounted}
+              shape={shape}
+              readOnly={readOnly}
               today={today}
               logged={loggedSet}
               onMarkToday={markToday}
@@ -1099,6 +1882,9 @@ export default function SavingsPage() {
           <TabsContent value="weekly">
             <ChallengePanel
               mounted={mounted}
+              shape={shape}
+              readOnly={readOnly}
+              today={today}
               completed={weekSet}
               saved={challengeSaved}
               onToggleWeek={toggleWeek}
@@ -1107,16 +1893,25 @@ export default function SavingsPage() {
 
           <TabsContent value="monthly">
             <BucketsPanel
-              balances={buckets}
-              saved={bucketsSaved}
-              onAdjust={adjustBucket}
+              mounted={mounted}
+              year={activeYear}
+              readOnly={readOnly}
+              month={activeMonth}
+              maxMonth={maxMonth}
+              onMonthChange={changeMonth}
+              balances={monthBalances}
+              monthSaved={monthSaved}
+              yearSaved={bucketsSaved}
+              injected={record.injected.includes(activeMonth)}
+              onFund={fundBucket}
+              onReset={resetBucket}
               onPayday={injectPayday}
             />
           </TabsContent>
         </Tabs>
 
         <p className="mt-8 text-center text-xs text-muted-foreground">
-          All three strategies are stored locally in this browser — nothing leaves the device.
+          Every year is archived locally in this browser — nothing leaves the device.
         </p>
       </div>
     </main>

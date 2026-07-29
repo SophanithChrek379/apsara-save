@@ -7,9 +7,13 @@ import { ThemeSync } from '@/components/theme-sync';
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
+/* Deliberately year-free: this file is evaluated once at build time, so naming a
+   year here would go stale the moment the calendar rolled over. The tracker
+   itself reads the year from the browser. */
 export const metadata: Metadata = {
-  title: 'Apsara Save — Daily Saving Tracker',
-  description: 'Save $1.25 every day of 2026. Target goal: $456.25.',
+  title: 'Apsara Save — Multi-Strategy Saving Tracker',
+  description:
+    'Track a daily $1.25 habit, a 52-week escalation ladder and monthly sinking-fund buckets, year by year.',
 };
 
 /* Mobile browsers tint their chrome from this. Two media-scoped values let that
