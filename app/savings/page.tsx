@@ -6,13 +6,29 @@ import {
   CalendarDays,
   Check,
   Flame,
+  Moon,
   QrCode,
+  Sun,
   Target,
   Wallet,
-  X,
 } from 'lucide-react';
 
-import { useDialog } from '@/hooks/use-dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import { useMediaQuery } from '@/hooks/use-media-query';
+import { useSystemTheme } from '@/hooks/use-system-theme';
 
 /* -------------------------------------------------------------------------- */
 /*                            Hardcoded boundaries                            */
@@ -188,26 +204,55 @@ function MetricCard({ icon, label, value, hint, accent = false }: MetricCardProp
       className={[
         'flex min-h-[104px] flex-col justify-between rounded-xl border p-4 transition-colors duration-300',
         accent
-          ? 'border-emerald-500/30 bg-emerald-500/5'
-          : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700',
+          ? 'border-emerald-500/40 dark:border-emerald-500/30 bg-emerald-500/10 dark:bg-emerald-500/5'
+          : 'border-border bg-card/60 hover:border-muted-foreground/40',
       ].join(' ')}
     >
-      <div className="flex items-center gap-2 text-zinc-400">
-        <span className={accent ? 'text-emerald-400' : 'text-zinc-500'}>{icon}</span>
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <span className={accent ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}>{icon}</span>
         <span className="text-xs font-medium uppercase tracking-wider">{label}</span>
       </div>
       <div>
         <p
           className={[
             'text-2xl font-semibold tabular-nums tracking-tight',
-            accent ? 'text-emerald-400' : 'text-zinc-100',
+            accent ? 'text-emerald-600 dark:text-emerald-400' : 'text-foreground',
           ].join(' ')}
         >
           {value}
         </p>
-        {hint ? <p className="mt-0.5 text-xs text-zinc-500">{hint}</p> : null}
+        {hint ? <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p> : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * Reports which appearance the device is currently asking for. Reserves its own
+ * width so the label appearing after hydration cannot nudge the header.
+ */
+function ThemeIndicator() {
+  const theme = useSystemTheme();
+
+  return (
+    <span
+      title="Theme follows your device appearance"
+      className="inline-flex min-w-[5.5rem] items-center justify-end gap-1.5 text-xs text-muted-foreground"
+    >
+      {theme === null ? (
+        // Unknown during hydration — hold the space, show nothing.
+        <span className="h-3.5 w-3.5" aria-hidden="true" />
+      ) : (
+        <>
+          {theme === 'dark' ? (
+            <Moon className="h-3.5 w-3.5" />
+          ) : (
+            <Sun className="h-3.5 w-3.5" />
+          )}
+          <span>Auto · {theme === 'dark' ? 'Dark' : 'Light'}</span>
+        </>
+      )}
+    </span>
   );
 }
 
@@ -216,107 +261,128 @@ type KhqrDialogProps = {
   onClose: () => void;
 };
 
-function KhqrDialog({ open, onClose }: KhqrDialogProps) {
+/** Shared panel contents — identical in the sheet and the dialog. */
+function KhqrPanel() {
   const [imageFailed, setImageFailed] = useState(false);
-  const panelRef = useDialog<HTMLDivElement>(open, onClose);
-
-  if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div
-        className="absolute inset-0 bg-zinc-950/80 backdrop-blur-sm"
-        onClick={onClose}
-        aria-hidden="true"
-      />
+    <>
+      {/*
+        Deliberately a plain <img>, not next/image: the optimizer re-encodes and
+        can soften the QR modules, which hurts scan reliability. This serves the
+        exact original pixels. Drop the poster at public/khqr.png.
+      */}
+      {imageFailed ? (
+        <div className="mt-5 flex aspect-[1/1.414] w-full flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-background p-6 text-center">
+          <QrCode className="h-14 w-14 text-muted-foreground" />
+          <p className="text-sm font-medium text-muted-foreground">QR image not found</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Save your KHQR poster to
+            <br />
+            <code className="text-muted-foreground">public/khqr.png</code>
+          </p>
+        </div>
+      ) : (
+        <a
+          href={KHQR_IMAGE_SRC}
+          target="_blank"
+          rel="noreferrer"
+          title="Open full size"
+          className="mt-5 block overflow-hidden rounded-xl bg-white ring-1 ring-border transition-opacity hover:opacity-95"
+        >
+          {/* Fixed aspect box reserves the space so the panel never jumps as
+              the image decodes. object-contain keeps a square crop valid too. */}
+          <img
+            src={KHQR_IMAGE_SRC}
+            alt={`KHQR code for ${DESTINATION_NAME} at ${DESTINATION_BANK}`}
+            className="aspect-[1/1.414] w-full object-contain"
+            onError={() => setImageFailed(true)}
+          />
+        </a>
+      )}
 
-      {/* role="dialog" belongs on the panel, not the full-screen wrapper — the
-          wrapper also holds the backdrop, which is not part of the dialog. */}
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="khqr-dialog-title"
-        tabIndex={-1}
-        className="relative max-h-[90vh] w-full max-w-sm overflow-y-auto overscroll-contain rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl focus:outline-none"
+      <dl className="mt-5 divide-y divide-border overflow-hidden rounded-lg border border-border bg-background">
+        <div className="flex items-center justify-between px-3 py-2">
+          <dt className="text-xs uppercase tracking-wider text-muted-foreground">To</dt>
+          <dd className="text-sm font-medium text-foreground">{DESTINATION_NAME}</dd>
+        </div>
+        <div className="flex items-center justify-between px-3 py-2">
+          <dt className="text-xs uppercase tracking-wider text-muted-foreground">Bank</dt>
+          <dd className="text-sm text-foreground/80">{DESTINATION_BANK}</dd>
+        </div>
+        <div className="flex items-center justify-between px-3 py-2">
+          <dt className="text-xs uppercase tracking-wider text-muted-foreground">Amount</dt>
+          <dd className="text-sm font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+            {formatMoney(DAILY_AMOUNT)}
+          </dd>
+        </div>
+      </dl>
+
+      <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
+        Static KHQR carries no preset amount — enter{' '}
+        <span className="font-medium text-muted-foreground">{formatMoney(DAILY_AMOUNT)}</span>{' '}
+        manually in your banking app.
+      </p>
+    </>
+  );
+}
+
+const PANEL_TITLE = `Transfer ${formatMoney(DAILY_AMOUNT)}`;
+const PANEL_DESCRIPTION = 'Scan with your sending bank app, then log the day below.';
+
+/* Zinc overrides so both variants keep the page's palette rather than the
+   neutral shadcn popover tokens. gap-0 hands spacing back to the mt-* rhythm
+   inside KhqrPanel, which both variants share. */
+const PANEL_CLASSES =
+  'gap-0 overflow-y-auto overscroll-contain border-border bg-card p-6 text-foreground ring-0';
+
+function KhqrDialog({ open, onClose }: KhqrDialogProps) {
+  // Bottom sheet on phones, centered dialog from sm up. Both are Radix under
+  // the hood, so scroll lock, focus trap, focus restore and Escape come free —
+  // none of that is hand-rolled here anymore.
+  const isDesktop = useMediaQuery('(min-width: 40rem)');
+
+  // Radix reports both open and close through onOpenChange; the parent only
+  // needs the close edge, since it owns the flag that opens this.
+  const onOpenChange = (next: boolean) => {
+    if (!next) onClose();
+  };
+
+  if (isDesktop) {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className={`${PANEL_CLASSES} max-h-[90vh] rounded-2xl border`}>
+          <DialogHeader className="gap-1">
+            <DialogTitle className="text-lg font-semibold tracking-tight text-foreground">
+              {PANEL_TITLE}
+            </DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">
+              {PANEL_DESCRIPTION}
+            </DialogDescription>
+          </DialogHeader>
+          <KhqrPanel />
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="bottom"
+        className={`${PANEL_CLASSES} max-h-[85vh] rounded-t-2xl border-t`}
       >
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute right-4 top-4 rounded-md p-1 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-        >
-          <X className="h-4 w-4" />
-        </button>
-
-        <h2
-          id="khqr-dialog-title"
-          className="text-lg font-semibold tracking-tight text-zinc-100"
-        >
-          Transfer {formatMoney(DAILY_AMOUNT)}
-        </h2>
-        <p className="mt-1 text-sm text-zinc-400">
-          Scan with your sending bank app, then log the day below.
-        </p>
-
-        {/*
-          Deliberately a plain <img>, not next/image: the optimizer re-encodes and
-          can soften the QR modules, which hurts scan reliability. This serves the
-          exact original pixels. Drop the poster at public/khqr.png.
-        */}
-        {imageFailed ? (
-          <div className="mt-5 flex aspect-[1/1.414] w-full flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-zinc-700 bg-zinc-950 p-6 text-center">
-            <QrCode className="h-14 w-14 text-zinc-600" />
-            <p className="text-sm font-medium text-zinc-400">QR image not found</p>
-            <p className="text-xs leading-relaxed text-zinc-500">
-              Save your KHQR poster to
-              <br />
-              <code className="text-zinc-400">public/khqr.png</code>
-            </p>
-          </div>
-        ) : (
-          <a
-            href={KHQR_IMAGE_SRC}
-            target="_blank"
-            rel="noreferrer"
-            title="Open full size"
-            className="mt-5 block overflow-hidden rounded-xl bg-white ring-1 ring-zinc-800 transition-opacity hover:opacity-95"
-          >
-            {/* Fixed aspect box reserves the space so the dialog never jumps as
-                the image decodes. object-contain keeps a square crop valid too. */}
-            <img
-              src={KHQR_IMAGE_SRC}
-              alt={`KHQR code for ${DESTINATION_NAME} at ${DESTINATION_BANK}`}
-              className="aspect-[1/1.414] w-full object-contain"
-              onError={() => setImageFailed(true)}
-            />
-          </a>
-        )}
-
-        <dl className="mt-5 divide-y divide-zinc-800 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
-          <div className="flex items-center justify-between px-3 py-2">
-            <dt className="text-xs uppercase tracking-wider text-zinc-500">To</dt>
-            <dd className="text-sm font-medium text-zinc-200">{DESTINATION_NAME}</dd>
-          </div>
-          <div className="flex items-center justify-between px-3 py-2">
-            <dt className="text-xs uppercase tracking-wider text-zinc-500">Bank</dt>
-            <dd className="text-sm text-zinc-300">{DESTINATION_BANK}</dd>
-          </div>
-          <div className="flex items-center justify-between px-3 py-2">
-            <dt className="text-xs uppercase tracking-wider text-zinc-500">Amount</dt>
-            <dd className="text-sm font-semibold tabular-nums text-emerald-400">
-              {formatMoney(DAILY_AMOUNT)}
-            </dd>
-          </div>
-        </dl>
-
-        <p className="mt-3 text-center text-xs leading-relaxed text-zinc-500">
-          Static KHQR carries no preset amount — enter{' '}
-          <span className="font-medium text-zinc-400">{formatMoney(DAILY_AMOUNT)}</span>{' '}
-          manually in your banking app.
-        </p>
-      </div>
-    </div>
+        <SheetHeader className="gap-1 p-0">
+          <SheetTitle className="text-lg font-semibold tracking-tight text-foreground">
+            {PANEL_TITLE}
+          </SheetTitle>
+          <SheetDescription className="text-sm text-muted-foreground">
+            {PANEL_DESCRIPTION}
+          </SheetDescription>
+        </SheetHeader>
+        <KhqrPanel />
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -396,39 +462,42 @@ export default function SavingsPage() {
   })();
 
   return (
-    <main className="min-h-screen bg-zinc-950 px-4 py-10 text-zinc-100 antialiased sm:px-6 sm:py-14">
+    <main className="min-h-screen bg-background px-4 py-10 text-foreground antialiased sm:px-6 sm:py-14">
       <div className="mx-auto w-full max-w-3xl">
         {/* Header */}
         <header>
-          <p className="text-xs font-medium uppercase tracking-[0.2em] text-zinc-500">
-            Daily Saving Tracker
-          </p>
-          <h1 className="mt-2 bg-gradient-to-r from-white via-zinc-200 to-emerald-300 bg-clip-text text-4xl font-semibold tracking-tight text-transparent sm:text-5xl">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+              Daily Saving Tracker
+            </p>
+            <ThemeIndicator />
+          </div>
+          <h1 className="mt-2 bg-gradient-to-r from-zinc-900 via-zinc-700 to-emerald-600 dark:from-white dark:via-zinc-200 dark:to-emerald-300 bg-clip-text text-4xl font-semibold tracking-tight text-transparent sm:text-5xl">
             Apsara Save
           </h1>
-          <p className="mt-3 text-sm text-zinc-400">
+          <p className="mt-3 text-sm text-muted-foreground">
             {formatMoney(DAILY_AMOUNT)} a day, every day of 2026 —{' '}
-            <span className="text-zinc-300">{formatLongDate(TRACK_START)}</span> to{' '}
-            <span className="text-zinc-300">{formatLongDate(TRACK_END)}</span>.
+            <span className="text-foreground/80">{formatLongDate(TRACK_START)}</span> to{' '}
+            <span className="text-foreground/80">{formatLongDate(TRACK_END)}</span>.
           </p>
         </header>
 
         {/* Scoreboard */}
-        <section className="mt-8 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 sm:p-6">
+        <section className="mt-8 rounded-2xl border border-border bg-card/40 p-5 sm:p-6">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Total Saved
               </p>
-              <p className="mt-1 text-4xl font-semibold tabular-nums tracking-tight text-emerald-400 sm:text-5xl">
+              <p className="mt-1 text-4xl font-semibold tabular-nums tracking-tight text-emerald-600 dark:text-emerald-400 sm:text-5xl">
                 {formatMoney(totalSaved)}
               </p>
             </div>
             <div className="text-right">
-              <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Target Goal
               </p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-zinc-300">
+              <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-foreground/80">
                 {formatMoney(TARGET_GOAL)}
               </p>
             </div>
@@ -437,7 +506,7 @@ export default function SavingsPage() {
           {/* Progress bar */}
           <div className="mt-5">
             <div
-              className="h-2.5 w-full overflow-hidden rounded-full bg-zinc-800"
+              className="h-2.5 w-full overflow-hidden rounded-full bg-muted"
               role="progressbar"
               aria-valuemin={0}
               aria-valuemax={100}
@@ -449,7 +518,7 @@ export default function SavingsPage() {
                 style={{ width: `${progress}%` }}
               />
             </div>
-            <div className="mt-2 flex items-center justify-between text-xs text-zinc-500">
+            <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
               <span className="tabular-nums">{progress.toFixed(1)}% complete</span>
               <span className="tabular-nums">
                 {completed.length} / {TOTAL_DAYS} days
@@ -486,9 +555,9 @@ export default function SavingsPage() {
           <button
             type="button"
             onClick={() => setQrOpen(true)}
-            className="flex min-h-[64px] items-center justify-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-4 text-sm font-medium text-zinc-200 transition-colors duration-200 hover:border-zinc-700 hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60"
+            className="flex min-h-[64px] items-center justify-center gap-2 rounded-xl border border-border bg-card px-5 py-4 text-sm font-medium text-foreground transition-colors duration-200 hover:border-muted-foreground/40 hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60"
           >
-            <QrCode className="h-4 w-4 text-zinc-400" />
+            <QrCode className="h-4 w-4 text-muted-foreground" />
             Transfer via KHQR
           </button>
 
@@ -500,7 +569,7 @@ export default function SavingsPage() {
               'flex min-h-[64px] items-center justify-center gap-2 rounded-xl px-5 py-4 text-sm font-semibold transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 sm:col-span-2',
               canLog
                 ? 'bg-emerald-500 text-emerald-950 hover:bg-emerald-400 active:scale-[0.99]'
-                : 'cursor-not-allowed border border-zinc-800 bg-zinc-900 text-zinc-500',
+                : 'cursor-not-allowed border border-border bg-card text-muted-foreground',
             ].join(' ')}
           >
             {mounted && todayLogged ? (
@@ -513,14 +582,14 @@ export default function SavingsPage() {
         </section>
 
         {/* 365-day contribution matrix — 12 month columns */}
-        <section className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 sm:p-6">
+        <section className="mt-6 rounded-2xl border border-border bg-card/40 p-5 sm:p-6">
           <div className="flex items-center justify-between">
-            <h2 className="flex items-center gap-2 text-sm font-medium text-zinc-300">
-              <Target className="h-4 w-4 text-zinc-500" />
+            <h2 className="flex items-center gap-2 text-sm font-medium text-foreground/80">
+              <Target className="h-4 w-4 text-muted-foreground" />
               2026 Contribution Matrix
             </h2>
-            <div className="flex items-center gap-2 text-xs text-zinc-500">
-              <span className="h-2.5 w-2.5 rounded-[2px] bg-zinc-800" />
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="h-2.5 w-2.5 rounded-[2px] bg-muted" />
               <span>Empty</span>
               <span className="ml-1 h-2.5 w-2.5 rounded-[2px] bg-emerald-500" />
               <span>Saved</span>
@@ -533,7 +602,7 @@ export default function SavingsPage() {
             <div className="mx-auto grid w-fit grid-cols-12 gap-x-3">
               {DATES_BY_MONTH.map((monthDates, monthIndex) => (
                 <div key={MONTH_LABELS[monthIndex]} className="flex flex-col items-center">
-                  <span className="mb-2 text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+                  <span className="mb-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                     {MONTH_LABELS[monthIndex]}
                   </span>
                   <div className="flex flex-col gap-[3px]">
@@ -563,9 +632,9 @@ export default function SavingsPage() {
                       }`;
                       const appearance = [
                         'h-2.5 w-2.5 rounded-[2px] transition-colors duration-300',
-                        isLogged ? 'bg-emerald-500' : 'bg-zinc-800',
+                        isLogged ? 'bg-emerald-500' : 'bg-muted',
                         isToday
-                          ? 'ring-1 ring-emerald-300/70 ring-offset-1 ring-offset-zinc-900'
+                          ? 'ring-1 ring-emerald-500/70 dark:ring-emerald-300/70 ring-offset-1 ring-offset-background'
                           : '',
                       ].join(' ');
 
@@ -581,7 +650,7 @@ export default function SavingsPage() {
                           title={`${label} — click to toggle`}
                           aria-label={label}
                           aria-pressed={isLogged}
-                          className={`${appearance} cursor-pointer hover:ring-1 hover:ring-zinc-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400`}
+                          className={`${appearance} cursor-pointer hover:ring-1 hover:ring-muted-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400`}
                         />
                       );
                     })}
@@ -592,7 +661,7 @@ export default function SavingsPage() {
           </div>
         </section>
 
-        <p className="mt-6 text-center text-xs text-zinc-600">
+        <p className="mt-6 text-center text-xs text-muted-foreground">
           Click any past day to correct it. Progress is stored locally in this browser.
         </p>
       </div>
