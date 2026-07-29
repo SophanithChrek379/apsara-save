@@ -1,0 +1,22 @@
+<!-- App mark: the five towers of Angkor Wat rising from their terrace — a quincunx,
+     so it is symmetric, and each tower is a straight shaft that pulls into a lotus
+     point, which is what keeps it from reading as a row of candles.
+
+     Geometry is laid out on a 512 grid so the shafts land on whole pixels when the
+     browser scales this down to 16 or 32 for a tab. The mark carries its own dark
+     plate rather than inheriting the page palette: a favicon is drawn onto browser
+     chrome, not onto the app, so it has to hold up against a light *and* a dark
+     tab strip with no media query to help it. -->
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="112" fill="#0A0A0A" />
+  <g fill="#FAFAFA">
+    <!-- Outer pair, then the inner pair, then the central sanctuary. -->
+    <path d="M80 372V308Q89 273 104 258Q119 273 128 308V372Z" />
+    <path d="M152 372V264Q163 205 180 180Q197 205 208 264V372Z" />
+    <path d="M222 372V213Q235 126 256 88Q277 126 290 213V372Z" />
+    <path d="M304 372V264Q315 205 332 180Q349 205 360 264V372Z" />
+    <path d="M384 372V308Q393 273 408 258Q423 273 432 308V372Z" />
+    <!-- The terrace the towers stand on, and the mark's optical baseline. -->
+    <rect x="56" y="360" width="400" height="34" rx="12" />
+  </g>
+</svg>
