@@ -190,8 +190,22 @@ function KhqrDialog({ open, onClose }: KhqrDialogProps) {
       if (event.key === 'Escape') onClose();
     };
 
+    // Lock the page behind the dialog. Padding equal to the width the scrollbar
+    // gives up keeps the layout from jumping sideways as overflow goes hidden.
+    const { body } = document;
+    const previousOverflow = body.style.overflow;
+    const previousPaddingRight = body.style.paddingRight;
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+
+    body.style.overflow = 'hidden';
+    if (scrollbarWidth > 0) body.style.paddingRight = `${scrollbarWidth}px`;
+
     document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      body.style.overflow = previousOverflow;
+      body.style.paddingRight = previousPaddingRight;
+    };
   }, [open, onClose]);
 
   if (!open) return null;
@@ -209,7 +223,7 @@ function KhqrDialog({ open, onClose }: KhqrDialogProps) {
         aria-hidden="true"
       />
 
-      <div className="relative max-h-[90vh] w-full max-w-sm overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl">
+      <div className="relative max-h-[90vh] w-full max-w-sm overflow-y-auto overscroll-contain rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl">
         <button
           type="button"
           onClick={onClose}
