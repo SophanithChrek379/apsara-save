@@ -6,5 +6,10 @@ next-env.d.ts
 *.tsbuildinfo
 .env*.local
 
+# Playwright
+/test-results
+/playwright-report
+/blob-report
+
 # Personal permission overrides — .claude/settings.json is the shared one.
 .claude/settings.local.json

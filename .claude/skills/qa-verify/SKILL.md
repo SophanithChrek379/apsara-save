@@ -1,15 +1,19 @@
 ---
 name: qa-verify
-description: The QA gate for Apsara Save — run the layered checks (typecheck, build, project-invariant audit, live-page smoke test), verify each result rather than assuming it, then report prioritized fixes. Use after any code change to app/, components/, hooks/, or lib/; before a commit; when asked to "check", "verify", "QA", "review my change", or "what should I fix next".
+description: The QA gate for Apsara Save — run the layered checks (typecheck, build, project-invariant audit, live-page smoke test, and a conditional browser interaction pass), verify each result rather than assuming it, then report prioritized fixes. Use after any code change to app/, components/, hooks/, or lib/; before a commit; when asked to "check", "verify", "QA", "review my change", or "what should I fix next".
 ---
 
 # QA gate
 
-Four layers, cheapest first. Run them in order and stop early only on a Layer 1
-failure — a type error makes everything downstream meaningless. Otherwise run
-every layer, because one blocker should not hide three others.
+Five layers, cheapest first. Run Layers 1-4 in order and stop early only on a
+Layer 1 failure — a type error makes everything downstream meaningless.
+Otherwise run every one of them, because one blocker should not hide three
+others.
 
-Total cost is about 15 seconds. There is no reason to skip layers to save time.
+Layers 1-4 cost about 15 seconds total and always run. Layer 5 is different: it
+spins up a real browser and costs several seconds more, so it's conditional —
+see Layer 5 for exactly when. There is no reason to skip Layers 1-4 to save
+time.
 
 ## Layer 0 — Scope
 
@@ -151,6 +155,32 @@ from the prerendered HTML — its absence is not a defect. Port 3187 avoids
 colliding with a dev server on 3000. Always kill the server, including when a
 check fails midway.
 
+## Layer 5 — Interaction (conditional)
+
+Layer 4 proves the HTML shipped; it cannot prove a click handler fires or an
+`aria-pressed` toggle actually flips, because it never runs JavaScript. Layer 5
+does, using Playwright — see the `e2e-test` skill at
+`.claude/skills/e2e-test/SKILL.md` for the full setup and how to extend it.
+
+Run it only when the diff touches something interactive: a new or changed
+event handler, a toggle/tab/click target, ARIA state that changes at runtime,
+or a file under `e2e/` itself. Skip it for a pure styling, copy, or data
+change — Layer 4 already covers those, and paying for a browser launch buys
+nothing there.
+
+```bash
+npm run test:e2e
+```
+
+A pass is every test green (`N passed`, `0 failed`). First run on a machine
+needs the browser binary once: `npx playwright install chromium`. The
+suite starts its own dev server on port 3001 and reuses one already running —
+never hand-start a server for this.
+
+If Layer 5 was skipped because the diff was non-interactive, say so in the
+report rather than omitting it silently — "Layer 5 skipped (no interactive
+code in this diff)" is a real, checked decision, not an oversight.
+
 ## Report
 
 Group findings by what the user should do about them, most severe first. Skip
@@ -166,10 +196,13 @@ For each: `file.tsx:line`, one sentence on what breaks and under what
 conditions, then the concrete fix. Concrete beats exhaustive — three real
 findings with line numbers are worth more than twelve speculative ones.
 
-Close with the gate result as a single line, naming every layer that ran:
+Close with the gate result as a single line, naming every layer that ran —
+include Layer 5 whenever it ran or was deliberately skipped, never omit it
+silently:
 
 ```text
-typecheck ✓ · build ✓ (5/5 static) · audit ✓ · live ✓ — 2 should-fix, 1 improvement
+typecheck ✓ · build ✓ (5/5 static) · audit ✓ · live ✓ · e2e ✓ (4/4) — 2 should-fix, 1 improvement
+typecheck ✓ · build ✓ (5/5 static) · audit ✓ · live ✓ · e2e skipped (no interactive code in diff) — 1 improvement
 ```
 
 ## Honesty
