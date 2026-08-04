@@ -1786,10 +1786,12 @@ export default function SavingsPage() {
   );
 
   return (
-    <main className="min-h-screen bg-background px-4 py-10 text-foreground antialiased sm:px-6 sm:py-14">
+    <main className="min-h-screen bg-background px-4 pb-10 pt-4 text-foreground antialiased sm:px-6 sm:pb-14 sm:pt-4">
       <div className="mx-auto w-full max-w-3xl">
-        {/* Global aggregate header */}
-        <header>
+        {/* Global aggregate header. Sticky so the running total stays in view
+            while the day/week/bucket lists scroll underneath it — the number
+            that matters most is the one you'd otherwise scroll away from. */}
+        <header className="sticky top-0 z-30 -mx-4 bg-background/95 px-4 pb-5 pt-6 backdrop-blur supports-[backdrop-filter]:bg-background/85 sm:-mx-6 sm:px-6">
           <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
             Multi-Strategy Savings
           </p>
