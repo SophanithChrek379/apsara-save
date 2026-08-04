@@ -14,13 +14,11 @@ import {
   History,
   Layers,
   Lock,
-  Moon,
   Plane,
   PiggyBank,
   RotateCcw,
   Shirt,
   ShieldCheck,
-  Sun,
   Target,
   TrendingUp,
   Wallet,
@@ -35,7 +33,6 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { useSystemTheme } from '@/hooks/use-system-theme';
 import { cn } from '@/lib/utils';
 
 /* -------------------------------------------------------------------------- */
@@ -655,35 +652,6 @@ function StatLine({ label, value }: { label: string; value: string }) {
       <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
       <p className="mt-0.5 text-sm font-semibold tabular-nums text-foreground">{value}</p>
     </div>
-  );
-}
-
-/**
- * Reports which appearance the device is currently asking for. Reserves its own
- * width so the label appearing after hydration cannot nudge the header.
- */
-function ThemeIndicator() {
-  const theme = useSystemTheme();
-
-  return (
-    <span
-      title="Theme follows your device appearance"
-      className="inline-flex min-w-[5.5rem] items-center justify-end gap-1.5 text-xs text-muted-foreground"
-    >
-      {theme === null ? (
-        // Unknown during hydration — hold the space, show nothing.
-        <span className="h-3.5 w-3.5" aria-hidden="true" />
-      ) : (
-        <>
-          {theme === 'dark' ? (
-            <Moon className="h-3.5 w-3.5" />
-          ) : (
-            <Sun className="h-3.5 w-3.5" />
-          )}
-          <span>Auto · {theme === 'dark' ? 'Dark' : 'Light'}</span>
-        </>
-      )}
-    </span>
   );
 }
 
@@ -1822,12 +1790,9 @@ export default function SavingsPage() {
       <div className="mx-auto w-full max-w-3xl">
         {/* Global aggregate header */}
         <header>
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
-              Multi-Strategy Savings
-            </p>
-            <ThemeIndicator />
-          </div>
+          <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+            Multi-Strategy Savings
+          </p>
 
           <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
             {/* Clipped-text gradient has to be stated per palette: the dark ramp
