@@ -13,7 +13,7 @@ const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 export const metadata: Metadata = {
   title: 'Apsara Save — Multi-Strategy Saving Tracker',
   description:
-    'Track a daily $1.25 habit, a 52-week escalation ladder and monthly sinking-fund buckets, year by year.',
+    'Track a daily $1.25 habit and monthly sinking-fund buckets, year by year.',
 };
 
 /* Mobile browsers tint their chrome from this. Two media-scoped values let that

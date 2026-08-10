@@ -22,7 +22,6 @@ import {
   Shirt,
   ShieldCheck,
   Target,
-  TrendingUp,
   Wallet,
 } from 'lucide-react';
 
@@ -50,7 +49,6 @@ const VAULT_KEY = 'apsara_savings_vault';
    user's only copy of their history to save a few bytes is not a good trade. */
 const LEGACY_DAILY_KEY = 'apsara_daily_2026';
 const LEGACY_DAILY_KEY_V0 = 'apsara_savings_2026';
-const LEGACY_CHALLENGE_KEY = 'apsara_challenge_52w';
 const LEGACY_BUCKETS_KEY = 'apsara_monthly_buckets';
 const LEGACY_YEAR = 2026;
 
@@ -68,27 +66,6 @@ const MAX_YEAR = 2200;
 /* -------------------------------------------------------------------------- */
 
 const DAILY_AMOUNT = 1.25;
-
-/* -------------------------------------------------------------------------- */
-/*                    Strategy B — 52-week escalation ladder                  */
-/* -------------------------------------------------------------------------- */
-
-const TOTAL_WEEKS = 52;
-const WEEK_ONE_AMOUNT = 2;
-const WEEK_STEP = 1;
-
-/** Week 1 is $2 and every week after adds exactly $1, so week 52 is $53. */
-function weekAmount(week: number): number {
-  return WEEK_ONE_AMOUNT + (week - 1) * WEEK_STEP;
-}
-
-const ALL_WEEKS: readonly number[] = Array.from(
-  { length: TOTAL_WEEKS },
-  (_, index) => index + 1,
-);
-
-/** Sum of the whole ladder: $2 + $3 + … + $53 = $1,430.00. */
-const CHALLENGE_TARGET = ALL_WEEKS.reduce((sum, week) => sum + weekAmount(week), 0);
 
 /* -------------------------------------------------------------------------- */
 /*                  Strategy C — monthly sinking-fund buckets                 */
@@ -329,10 +306,10 @@ function getYearShape(year: number): YearShape {
   return shape;
 }
 
-/** Combined goal for a single year: daily habit + full ladder + twelve
-    paydays + twelve cash-book bills. */
+/** Combined goal for a single year: daily habit + twelve paydays + twelve
+    cash-book bills. */
 function combinedTarget(shape: YearShape): number {
-  return shape.dailyTarget + CHALLENGE_TARGET + PAYDAY_TOTAL * MONTHS_PER_YEAR + CASH_TARGET;
+  return shape.dailyTarget + PAYDAY_TOTAL * MONTHS_PER_YEAR + CASH_TARGET;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -353,16 +330,6 @@ const SKELETON_SHAPE = getYearShape(2024);
 /** Stands in for any label that cannot be known before the clock is read. */
 const PLACEHOLDER = '—';
 
-/**
- * First calendar day of a ladder week: week 1 opens on Jan 1 and each week
- * after opens seven days later. Week 52 opens on day 358, so the index is
- * always inside the year — including in a leap year, where the extra day
- * simply falls past the end of the ladder.
- */
-function weekStartISO(shape: YearShape, week: number): string {
-  return shape.allDates[(week - 1) * 7] ?? shape.startISO;
-}
-
 /** Consecutive logged days ending today, or ending yesterday if today is unlogged. */
 function computeDayStreak(shape: YearShape, logged: Set<string>, today: string): number {
   if (!shape.validDates.has(today)) return 0;
@@ -374,16 +341,6 @@ function computeDayStreak(shape: YearShape, logged: Set<string>, today: string):
   while (logged.has(toISODate(cursor))) {
     streak += 1;
     cursor = addDays(cursor, -1);
-  }
-  return streak;
-}
-
-/** Consecutive completed weeks ending at the furthest week checked off. */
-function computeWeekStreak(completed: Set<number>): number {
-  let streak = 0;
-  for (let week = TOTAL_WEEKS; week >= 1; week -= 1) {
-    if (completed.has(week)) streak += 1;
-    else if (streak > 0) break;
   }
   return streak;
 }
@@ -420,7 +377,6 @@ function datesThrough(shape: YearShape, iso: string): string[] {
 /** One year's three strategies. Years never share objects or interfere. */
 type YearRecord = {
   daily: string[];
-  challenge: number[];
   monthly: MonthlyLedger;
   /** Months whose payday allocation has already been dropped, so it cannot
       be dropped a second time. Kept apart from the balances because a hand-
@@ -432,11 +388,11 @@ type YearRecord = {
   cash: number[];
 };
 
-/** `{ '2026': { daily, challenge, monthly, injected, cash }, '2027': { … } }` */
+/** `{ '2026': { daily, monthly, injected, cash }, '2027': { … } }` */
 type Vault = Record<string, YearRecord>;
 
 function emptyRecord(): YearRecord {
-  return { daily: [], challenge: [], monthly: emptyLedger(), injected: [], cash: [] };
+  return { daily: [], monthly: emptyLedger(), injected: [], cash: [] };
 }
 
 /* Stable stand-in for a year with nothing saved yet. Frozen and shared so the
@@ -444,7 +400,6 @@ function emptyRecord(): YearRecord {
    the vault itself only ever receives fresh objects from `emptyRecord()`. */
 const EMPTY_RECORD: YearRecord = Object.freeze({
   daily: Object.freeze([]) as unknown as string[],
-  challenge: Object.freeze([]) as unknown as number[],
   monthly: Object.freeze(emptyLedger()) as unknown as MonthlyLedger,
   injected: Object.freeze([]) as unknown as number[],
   cash: Object.freeze([]) as unknown as number[],
@@ -457,7 +412,6 @@ const EMPTY_BALANCES: BucketBalances = Object.freeze(emptyBuckets());
 function isEmptyRecord(record: YearRecord): boolean {
   return (
     record.daily.length === 0 &&
-    record.challenge.length === 0 &&
     ledgerTotal(record.monthly) === 0 &&
     record.cash.length === 0
   );
@@ -491,15 +445,6 @@ function makeDateParser(shape: YearShape) {
     );
     return Array.from(new Set(clean)).sort();
   };
-}
-
-function parseWeeks(value: unknown): number[] | null {
-  if (!Array.isArray(value)) return null;
-  const clean = value.filter(
-    (entry): entry is number =>
-      typeof entry === 'number' && Number.isInteger(entry) && entry >= 1 && entry <= TOTAL_WEEKS,
-  );
-  return Array.from(new Set(clean)).sort((a, b) => a - b);
 }
 
 function parseBuckets(value: unknown): BucketBalances | null {
@@ -580,11 +525,10 @@ function makeVaultParser(currentYear: number, currentMonth: number) {
       const foldMonth = lastOpenMonth(year, currentYear, currentMonth);
       const monthly = parseLedger(row.monthly, foldMonth) ?? emptyLedger();
 
-      // A year whose `daily` is corrupt still keeps its weeks and buckets: each
-      // branch falls back on its own rather than dropping the whole year.
+      // A year whose `daily` is corrupt still keeps its buckets: each branch
+      // falls back on its own rather than dropping the whole year.
       vault[key] = {
         daily: makeDateParser(getYearShape(year))(row.daily) ?? [],
-        challenge: parseWeeks(row.challenge) ?? [],
         monthly,
         // Records written before injections were tracked have no list. Any month
         // already sitting at full quota is taken to have had its payday, which
@@ -618,7 +562,6 @@ function migrateLegacyVault(currentYear: number, currentMonth: number): Vault {
       readStored(LEGACY_DAILY_KEY, parseDates) ??
       readStored(LEGACY_DAILY_KEY_V0, parseDates) ??
       [],
-    challenge: readStored(LEGACY_CHALLENGE_KEY, parseWeeks) ?? [],
     monthly,
     injected: monthly.flatMap((month, index) => (isMonthFunded(month) ? [index] : [])),
     // No legacy key predates this strategy — every migrated year starts empty.
@@ -1133,198 +1076,6 @@ function DailyPanel({
 }
 
 /* -------------------------------------------------------------------------- */
-/*                    Tab B — 52-week escalation challenge                    */
-/* -------------------------------------------------------------------------- */
-
-type ChallengePanelProps = {
-  mounted: boolean;
-  shape: YearShape;
-  readOnly: boolean;
-  today: string;
-  completed: Set<number>;
-  saved: number;
-  onToggleWeek: (week: number) => void;
-};
-
-function ChallengePanel({
-  mounted,
-  shape,
-  readOnly,
-  today,
-  completed,
-  saved,
-  onToggleWeek,
-}: ChallengePanelProps) {
-  const streak = useMemo(() => computeWeekStreak(completed), [completed]);
-  const remaining = CHALLENGE_TARGET - saved;
-  const percent = (saved / CHALLENGE_TARGET) * 100;
-
-  /* How far the ladder has opened. Week starts are ascending, so the count of
-     weeks already begun is also the highest checkable week number. A closed
-     year opens nothing; before mount `today` is '' and nothing opens either. */
-  const openWeeks = useMemo(() => {
-    if (!mounted || readOnly || today === '') return 0;
-    let opened = 0;
-    for (const week of ALL_WEEKS) {
-      if (weekStartISO(shape, week) <= today) opened += 1;
-    }
-    return opened;
-  }, [mounted, readOnly, today, shape]);
-
-  /* A rung's opening date is only nameable once the real year is in hand: an
-     archive has no opening date left to wait for, and before mount the year
-     itself is a stand-in. */
-  const showOpensOn = mounted && !readOnly;
-  const yearLabel = mounted ? `${shape.year}` : PLACEHOLDER;
-
-  return (
-    <div className="flex flex-col gap-5">
-      <Panel>
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Challenge Saved
-            </p>
-            <p className="mt-1 text-3xl font-semibold tabular-nums tracking-tight text-emerald-600 dark:text-emerald-400 sm:text-4xl">
-              {formatMoney(saved)}
-            </p>
-          </div>
-          <div className="text-right">
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Total Yield Target
-            </p>
-            <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-foreground/80">
-              {formatMoney(CHALLENGE_TARGET)}
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-5">
-          <ProgressBar percent={percent} label="52-week challenge progress" />
-          <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-            <span className="tabular-nums">{percent.toFixed(1)}% complete</span>
-            <span className="tabular-nums">
-              {completed.size} / {TOTAL_WEEKS} weeks
-            </span>
-          </div>
-        </div>
-
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <MetricCard
-            icon={<Flame className="h-4 w-4" />}
-            label={readOnly ? 'Final Streak' : 'Current Streak'}
-            value={`${streak} ${streak === 1 ? 'week' : 'weeks'}`}
-            hint={
-              readOnly
-                ? `${yearLabel} archive`
-                : streak > 0
-                  ? 'Ladder is climbing'
-                  : 'Check a week to start'
-            }
-            accent={streak > 0}
-          />
-          <MetricCard
-            icon={<CalendarCheck2 className="h-4 w-4" />}
-            label="Completed Weeks"
-            value={`${completed.size}`}
-            hint={`of ${TOTAL_WEEKS} weeks`}
-          />
-          <MetricCard
-            icon={<Target className="h-4 w-4" />}
-            label="Target Remaining"
-            value={formatMoney(remaining)}
-            hint={`${TOTAL_WEEKS - completed.size} weeks unchecked`}
-          />
-        </div>
-      </Panel>
-
-      {/* Check-in grid — one tile per week, tap to toggle */}
-      <Panel>
-        <PanelHeading icon={<TrendingUp className="h-4 w-4" />} title="Weekly Escalation Ladder">
-          <div className="flex items-center gap-2">
-            {readOnly ? <ArchivePill /> : null}
-            <span className="text-xs text-muted-foreground tabular-nums">
-              {formatMoney(weekAmount(1))} → {formatMoney(weekAmount(TOTAL_WEEKS))}
-            </span>
-          </div>
-        </PanelHeading>
-
-        <div className="mt-5 grid grid-cols-4 gap-2 sm:grid-cols-6 lg:grid-cols-8">
-          {ALL_WEEKS.map((week) => {
-            const amount = weekAmount(week);
-            // Before mount nothing reads as complete, so server and client agree.
-            const isDone = mounted && completed.has(week);
-            const isOpen = week <= openWeeks;
-            const opensOn = weekStartISO(shape, week);
-
-            const label = `Week ${week} — ${formatMoney(amount)} — ${
-              isDone ? 'completed' : 'not completed'
-            }`;
-            const appearance = cn(
-              'flex min-h-[62px] flex-col items-center justify-center gap-0.5 rounded-lg border transition-all duration-200',
-              isDone
-                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:border-emerald-500/30 dark:text-emerald-300'
-                : 'border-border bg-muted/40 text-muted-foreground',
-            );
-            const body = (
-              <>
-                <span className="text-[10px] font-medium uppercase tracking-wider">
-                  W{week}
-                </span>
-                <span className="text-sm font-semibold tabular-nums">${amount}</span>
-              </>
-            );
-
-            // A week that has not begun — or any week of a closed year — is
-            // rendered flat, matching how the daily matrix locks future days.
-            if (!isOpen) {
-              return (
-                <div
-                  key={week}
-                  title={
-                    showOpensOn
-                      ? `Week ${week} · ${formatMoney(amount)} · opens ${formatLongDate(opensOn)}`
-                      : `Week ${week} · ${formatMoney(amount)}`
-                  }
-                  aria-label={label}
-                  className={cn(appearance, !isDone && 'opacity-60')}
-                >
-                  {body}
-                </div>
-              );
-            }
-
-            return (
-              <button
-                key={week}
-                type="button"
-                onClick={() => onToggleWeek(week)}
-                aria-pressed={isDone}
-                aria-label={label}
-                title={`Week ${week} · ${formatMoney(amount)}`}
-                className={cn(
-                  appearance,
-                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 active:scale-[0.97]',
-                  !isDone && 'hover:border-muted-foreground/40 hover:text-foreground',
-                )}
-              >
-                {body}
-              </button>
-            );
-          })}
-        </div>
-
-        <p className="mt-5 text-center text-xs text-muted-foreground">
-          {readOnly
-            ? `${yearLabel} has closed — the ladder is shown exactly as it was checked off.`
-            : 'Weeks unlock on the Monday-equivalent day they begin. Future rungs stay locked.'}
-        </p>
-      </Panel>
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
 /*                  Tab C — monthly target allocation buckets                 */
 /* -------------------------------------------------------------------------- */
 
@@ -1655,8 +1406,8 @@ function CashPanel({
         <div className="mt-5 divide-y divide-border overflow-hidden rounded-xl border border-border">
           {MONTH_NAMES.map((name, index) => {
             const isDeposited = mounted && deposited.has(index);
-            // Mirrors the week tiles: an archived year opens nothing, so its
-            // rows always render as history rather than as controls.
+            // An archived year opens nothing, so its rows always render as
+            // history rather than as controls.
             const isOpen = mounted && !readOnly && index <= maxMonth;
 
             const status = isDeposited
@@ -1855,7 +1606,6 @@ function FdPanel({ mounted, today }: FdPanelProps) {
 
 const TAB_DEFS = [
   { id: 'daily', label: 'Daily', Icon: CalendarDays },
-  { id: 'weekly', label: 'Weekly', Icon: TrendingUp },
   { id: 'monthly', label: 'Monthly', Icon: Layers },
   { id: 'cash', label: 'Cash Book', Icon: BookOpen },
   { id: 'fd', label: 'Fixed Deposit', Icon: Landmark },
@@ -1987,16 +1737,11 @@ export default function SavingsPage() {
   }, [vault, currentYear]);
 
   const loggedSet = useMemo(() => new Set(record.daily), [record.daily]);
-  const weekSet = useMemo(() => new Set(record.challenge), [record.challenge]);
   const cashSet = useMemo(() => new Set(record.cash), [record.cash]);
 
   /* ------------------------------ Aggregates ----------------------------- */
 
   const dailySaved = record.daily.length * DAILY_AMOUNT;
-  const challengeSaved = useMemo(
-    () => record.challenge.reduce((sum, week) => sum + weekAmount(week), 0),
-    [record.challenge],
-  );
   /* The whole year for the header, the picked month for the tab. */
   const bucketsSaved = useMemo(() => ledgerTotal(record.monthly), [record.monthly]);
   const monthBalances = record.monthly[activeMonth] ?? EMPTY_BALANCES;
@@ -2007,7 +1752,7 @@ export default function SavingsPage() {
      shouldn't show money that wasn't there yet. */
   const fdCountsForYear = activeYear >= FD_START_YEAR && activeYear <= FD_END_YEAR;
   const fdSaved = fdCountsForYear ? FD_AMOUNT : 0;
-  const netWealth = dailySaved + challengeSaved + bucketsSaved + cashSaved + fdSaved;
+  const netWealth = dailySaved + bucketsSaved + cashSaved + fdSaved;
   const yearTarget = combinedTarget(shape) + fdSaved;
 
   /* ------------------------------- Actions ------------------------------- */
@@ -2047,20 +1792,6 @@ export default function SavingsPage() {
         daily: record.daily.includes(iso)
           ? record.daily.filter((entry) => entry !== iso)
           : [...record.daily, iso].sort(),
-      }));
-    },
-    [activeShape, today, updateActiveYear],
-  );
-
-  const toggleWeek = useCallback(
-    (week: number) => {
-      // A rung that has not opened yet cannot be checked, mirroring the matrix.
-      if (today === '' || weekStartISO(activeShape, week) > today) return;
-      updateActiveYear((record) => ({
-        ...record,
-        challenge: record.challenge.includes(week)
-          ? record.challenge.filter((entry) => entry !== week)
-          : [...record.challenge, week].sort((a, b) => a - b),
       }));
     },
     [activeShape, today, updateActiveYear],
@@ -2170,7 +1901,7 @@ export default function SavingsPage() {
     <main className="min-h-screen bg-background px-4 pb-10 pt-4 text-foreground antialiased sm:px-6 sm:pb-14 sm:pt-4">
       <div className="mx-auto w-full max-w-3xl">
         {/* Global aggregate header. Sticky so the running total stays in view
-            while the day/week/bucket lists scroll underneath it — the number
+            while the day/bucket lists scroll underneath it — the number
             that matters most is the one you'd otherwise scroll away from. */}
         <header className="sticky top-0 z-30 -mx-4 bg-background/95 px-4 pb-5 pt-6 backdrop-blur supports-[backdrop-filter]:bg-background/85 sm:-mx-6 sm:px-6">
           <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
@@ -2227,10 +1958,9 @@ export default function SavingsPage() {
               />
             </div>
 
-            {/* Breakdown of the five contributing strategies */}
-            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
+            {/* Breakdown of the four contributing strategies */}
+            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <StatLine label="Daily $1.25" value={formatMoney(dailySaved)} />
-              <StatLine label="52-Week" value={formatMoney(challengeSaved)} />
               <StatLine label="Monthly" value={formatMoney(bucketsSaved)} />
               <StatLine label="Cash Book" value={formatMoney(cashSaved)} />
               <StatLine label="Fixed Deposit" value={formatMoney(fdSaved)} />
@@ -2246,7 +1976,7 @@ export default function SavingsPage() {
         >
           {/* Surface and idle text come from the component's own `bg-muted` /
               `text-muted-foreground`; only layout and the border are set here. */}
-          <TabsList className="grid w-full grid-cols-3 gap-1 rounded-xl border border-border p-1 sm:grid-cols-5 group-data-horizontal/tabs:h-auto">
+          <TabsList className="grid w-full grid-cols-4 gap-1 rounded-xl border border-border p-1 group-data-horizontal/tabs:h-auto">
             {TAB_DEFS.map(({ id, label, Icon }) => (
               <TabsTrigger key={id} value={id} className={TRIGGER_CLASS}>
                 <Icon className="h-4 w-4" />
@@ -2264,18 +1994,6 @@ export default function SavingsPage() {
               logged={loggedSet}
               onMarkToday={markToday}
               onToggleDate={toggleDate}
-            />
-          </TabsContent>
-
-          <TabsContent value="weekly">
-            <ChallengePanel
-              mounted={mounted}
-              shape={shape}
-              readOnly={readOnly}
-              today={today}
-              completed={weekSet}
-              saved={challengeSaved}
-              onToggleWeek={toggleWeek}
             />
           </TabsContent>
 

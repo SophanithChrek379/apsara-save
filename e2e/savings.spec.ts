@@ -21,14 +21,13 @@ test('savings page loads with no console errors', async ({ page }) => {
 test('switching strategy tabs updates aria-selected and content', async ({ page }) => {
   await page.goto('/savings');
 
-  const weeklyTab = page.getByRole('tab', { name: /weekly/i });
-  await weeklyTab.click();
-  await expect(weeklyTab).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByText(/weekly escalation ladder/i)).toBeVisible();
-
   const monthlyTab = page.getByRole('tab', { name: /monthly/i });
   await monthlyTab.click();
   await expect(monthlyTab).toHaveAttribute('aria-selected', 'true');
+
+  const cashTab = page.getByRole('tab', { name: /cash book/i });
+  await cashTab.click();
+  await expect(cashTab).toHaveAttribute('aria-selected', 'true');
 });
 
 test('progress bars expose full ARIA value range', async ({ page }) => {
@@ -57,7 +56,7 @@ test('cash book tab toggles the current month and updates the tally', async ({ p
   await expect(row).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByText('1 / 12 months')).toBeVisible();
 
-  // Un-toggling corrects a mistaken entry, same as the Daily and Weekly tabs.
+  // Un-toggling corrects a mistaken entry, same as the Daily tab.
   await row.click();
   await expect(row).toHaveAttribute('aria-pressed', 'false');
   await expect(page.getByText('0 / 12 months')).toBeVisible();
