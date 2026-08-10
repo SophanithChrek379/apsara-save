@@ -721,7 +721,7 @@ function PrimaryAction({
       aria-label={ariaLabel}
       className={cn(
         'h-auto min-h-16 w-full gap-2 rounded-xl px-5 py-4 text-sm font-semibold whitespace-normal',
-        'bg-emerald-500 text-emerald-950 hover:bg-emerald-400 active:scale-[0.99]',
+        'bg-emerald-500 text-white hover:bg-emerald-400 active:scale-[0.99] dark:text-emerald-950',
         'focus-visible:border-emerald-500 focus-visible:ring-emerald-500/40',
         'disabled:pointer-events-auto disabled:cursor-not-allowed disabled:opacity-100',
         'disabled:border-border disabled:bg-card disabled:text-muted-foreground',
@@ -1516,7 +1516,7 @@ type TabId = (typeof TAB_DEFS)[number]['id'];
    modifier set lets twMerge drop the token version outright instead. */
 const TRIGGER_CLASS = cn(
   'h-11 rounded-lg text-sm font-semibold',
-  'data-[state=active]:bg-emerald-500 data-[state=active]:text-emerald-950',
+  'data-[state=active]:bg-emerald-500 data-[state=active]:text-white',
   'dark:data-[state=active]:bg-emerald-500 dark:data-[state=active]:text-emerald-950',
   'dark:data-[state=active]:border-transparent',
   'focus-visible:border-emerald-500 focus-visible:ring-emerald-500/40 focus-visible:outline-emerald-500',
