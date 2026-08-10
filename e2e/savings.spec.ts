@@ -63,25 +63,17 @@ test('cash book tab toggles the current month and updates the tally', async ({ p
   await expect(page.getByText('0 / 12 months')).toBeVisible();
 });
 
-test('fixed deposit tab toggles an installment and updates the tally', async ({ page }) => {
+test('fixed deposit tab shows a read-only preview with no controls', async ({ page }) => {
   await page.goto('/savings');
 
   const fdTab = page.getByRole('tab', { name: /fixed deposit/i });
   await fdTab.click();
   await expect(fdTab).toHaveAttribute('aria-selected', 'true');
 
-  // The first installment (Jan 3, 2026) is always due by the time this test
-  // can run, so it's a stable target unlike "the current month" — the whole
-  // deposit isn't calendar-year-scoped.
-  const row = page.getByRole('button', { name: /^Jan 3, 2026 — \$100\.00/ });
-  await expect(row).toBeVisible();
-  await expect(row).toHaveAttribute('aria-pressed', 'false');
-
-  await row.click();
-  await expect(row).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByText('1 / 12 installments')).toBeVisible();
-
-  await row.click();
-  await expect(row).toHaveAttribute('aria-pressed', 'false');
-  await expect(page.getByText('0 / 12 installments')).toBeVisible();
+  // The deposit was already made in full on the start date, so this tab is a
+  // preview, not a checklist — there is nothing on it to click.
+  await expect(page.getByText('ABA Fixed Deposit')).toBeVisible();
+  await expect(page.getByText('$100.00', { exact: true })).toBeVisible();
+  await expect(page.getByRole('progressbar', { name: /fixed deposit term progress/i })).toBeVisible();
+  await expect(page.getByRole('tabpanel').getByRole('button')).toHaveCount(0);
 });

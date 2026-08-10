@@ -45,11 +45,6 @@ import { cn } from '@/lib/utils';
 
 const VAULT_KEY = 'apsara_savings_vault';
 
-/* The fixed deposit runs Jan 3 2026 → Jan 3 2027 — an arbitrary window that
-   straddles a calendar-year boundary, so it cannot live inside the year-keyed
-   vault above. It gets its own flat key instead. */
-const FIXED_DEPOSIT_KEY = 'apsara_fixed_deposit';
-
 /* Pre-vault layout: three flat keys, all of them describing 2026 only. They are
    read once to seed the vault and then left in place as a fallback — deleting a
    user's only copy of their history to save a few bytes is not a good trade. */
@@ -184,23 +179,26 @@ const CASH_AMOUNT = 100;
 const CASH_TARGET = CASH_AMOUNT * MONTHS_PER_YEAR;
 
 /* -------------------------------------------------------------------------- */
-/*               Strategy E — ABA monthly fixed deposit (real bank)           */
-/*  A real term deposit, not a calendar-year habit: it starts on an arbitrary  */
-/*  date and runs 12 months forward, so it is tracked independently of the     */
-/*  year-keyed vault above rather than being forced into its shape. The exact  */
-/*  installment dates are computed further down, once the date helpers exist.  */
+/*               Strategy E — ABA fixed deposit (real bank money)             */
+/*  Not a habit to check off: the full principal was deposited once, on the    */
+/*  start date, and just sits at the bank until maturity. "Monthly" is ABA's   */
+/*  own plan-category label — a tenor/payout option in their app — not a       */
+/*  recurring contribution, so this renders as a read-only preview of where    */
+/*  the deposit stands rather than a ledger with anything to toggle.           */
 /* -------------------------------------------------------------------------- */
 
 const FD_BANK = 'ABA';
-const FD_MONTHLY_AMOUNT = 100;
+const FD_AMOUNT = 100;
+const FD_PLAN_TYPE = 'Monthly';
 const FD_START_ISO = '2026-01-03';
-/** Maturity — 12 months after the first deposit, one month past the twelfth
-    installment so the final deposit has time to sit before payout. */
+/** Maturity — 12 months after the deposit was made. */
 const FD_END_ISO = '2027-01-03';
-const FD_INSTALLMENTS = 12;
-
-/** $100 × 12 monthly installments = $1,200 at maturity. */
-const FD_TARGET = FD_MONTHLY_AMOUNT * FD_INSTALLMENTS;
+/* Sliced rather than parsed through fromISODate, which isn't declared yet at
+   this point in the file — a plain string slice needs no ordering care. Used
+   to fold the deposit into a given year's Net Wealth only for the years it
+   was actually held (2026 and 2027), not into an unrelated archived year. */
+const FD_START_YEAR = Number(FD_START_ISO.slice(0, 4));
+const FD_END_YEAR = Number(FD_END_ISO.slice(0, 4));
 
 /* -------------------------------------------------------------------------- */
 /*                            Formatting helpers                              */
@@ -255,26 +253,18 @@ function addDays(date: Date, days: number): Date {
   return next;
 }
 
-/** Used only for fixed-deposit installments, always on day 3 — a day that
-    never overflows into the wrong month, so no end-of-month clamping is
-    needed here the way a generic `addMonths` would require. */
-function addMonths(date: Date, months: number): Date {
-  const next = new Date(date);
-  next.setMonth(next.getMonth() + months);
-  return next;
-}
-
 function formatLongDate(iso: string): string {
   const date = fromISODate(iso);
   return `${MONTH_LABELS[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
 }
 
-/* Computed once from fixed constant strings, not the real clock, so this is
-   safe at module init — the same precedent as SKELETON_SHAPE below. Gives
-   Jan 3 2026 … Dec 3 2026, the twelve deposit dates. */
-const FD_INSTALLMENT_DATES: string[] = Array.from({ length: FD_INSTALLMENTS }, (_, index) =>
-  toISODate(addMonths(fromISODate(FD_START_ISO), index)),
-);
+/** Whole days between two ISO dates, `to` minus `from`. Used only for the
+    fixed deposit's term progress, where a day count reads more plainly than
+    a percentage of milliseconds. */
+function daysBetween(fromIso: string, toIso: string): number {
+  const msPerDay = 24 * 60 * 60 * 1000;
+  return Math.round((fromISODate(toIso).getTime() - fromISODate(fromIso).getTime()) / msPerDay);
+}
 
 /* -------------------------------------------------------------------------- */
 /*                        Per-year calendar geometry                          */
@@ -550,9 +540,6 @@ function parseLedger(value: unknown, foldMonth: number): MonthlyLedger | null {
   return ledger;
 }
 
-/* Also reused to parse the fixed deposit's contributed installments — its
-   bound of 12 happens to equal MONTHS_PER_YEAR, since the term runs twelve
-   monthly installments even though it isn't a calendar-year concept. */
 function parseMonthIndexes(value: unknown): number[] | null {
   if (!Array.isArray(value)) return null;
   const clean = value.filter(
@@ -1760,191 +1747,102 @@ function CashPanel({
 }
 
 /* -------------------------------------------------------------------------- */
-/*              Tab E — ABA monthly fixed deposit (real bank money)           */
+/*              Tab E — ABA fixed deposit (real bank money, read-only)        */
 /*  Independent of the Year Switcher on purpose: this term runs Jan 3 2026 →   */
-/*  Jan 3 2027, so "the active year" has no meaning for it. It has its own     */
-/*  `matured` flag instead of the shared `readOnly`.                          */
+/*  Jan 3 2027, so "the active year" has no meaning for it. There is also      */
+/*  nothing here to toggle — the full principal went in once, on the start     */
+/*  date, so this renders as a preview of where the deposit stands today       */
+/*  rather than a ledger with anything to check off.                          */
 /* -------------------------------------------------------------------------- */
 
 type FdPanelProps = {
   mounted: boolean;
   today: string;
-  contributed: Set<number>;
-  saved: number;
-  onToggleInstallment: (index: number) => void;
 };
 
-function FdPanel({ mounted, today, contributed, saved, onToggleInstallment }: FdPanelProps) {
+function FdPanel({ mounted, today }: FdPanelProps) {
   const matured = mounted && today !== '' && today >= FD_END_ISO;
-  const streak = useMemo(() => computeMonthStreak(contributed), [contributed]);
-  const remaining = FD_TARGET - saved;
-  const percent = (saved / FD_TARGET) * 100;
+  const totalDays = daysBetween(FD_START_ISO, FD_END_ISO);
+  const elapsedDays =
+    mounted && today !== ''
+      ? Math.min(totalDays, Math.max(0, daysBetween(FD_START_ISO, today)))
+      : 0;
+  const daysRemaining = totalDays - elapsedDays;
+  const percent = mounted ? (elapsedDays / totalDays) * 100 : 0;
 
   return (
     <div className="flex flex-col gap-5">
       <Panel>
-        <div className="flex flex-wrap items-end justify-between gap-4">
+        <PanelHeading icon={<Landmark className="h-4 w-4" />} title="ABA Fixed Deposit">
+          {matured ? <ArchivePill /> : null}
+        </PanelHeading>
+        <p className="mt-1 text-xs text-muted-foreground">
+          A real term deposit, not a habit to check off — the full principal went in once, on the
+          start date, and just sits at the bank until maturity.
+        </p>
+
+        <div className="mt-5 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Fixed Deposit Saved
+              Principal Deposited
             </p>
             <p className="mt-1 text-3xl font-semibold tabular-nums tracking-tight text-emerald-600 dark:text-emerald-400 sm:text-4xl">
-              {formatMoney(saved)}
+              {formatMoney(FD_AMOUNT)}
             </p>
           </div>
           <div className="text-right">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Maturity Target
+              {matured ? 'Matured' : 'Maturity'}
             </p>
             <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-foreground/80">
-              {formatMoney(FD_TARGET)}
+              {formatLongDate(FD_END_ISO)}
             </p>
           </div>
         </div>
 
         <div className="mt-5">
-          <ProgressBar percent={percent} label="Fixed deposit progress" />
+          <ProgressBar percent={percent} label="Fixed deposit term progress" />
           <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-            <span className="tabular-nums">{percent.toFixed(1)}% complete</span>
+            <span className="tabular-nums">{percent.toFixed(1)}% of term elapsed</span>
             <span className="tabular-nums">
-              {contributed.size} / {FD_INSTALLMENTS} installments
+              {matured ? 'Matured' : `${daysRemaining} ${daysRemaining === 1 ? 'day' : 'days'} to go`}
             </span>
           </div>
         </div>
 
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatLine label="Bank" value={FD_BANK} />
-          <StatLine label="Start" value={formatLongDate(FD_START_ISO)} />
+          <StatLine label="Plan Type" value={FD_PLAN_TYPE} />
+          <StatLine label="Deposited" value={formatLongDate(FD_START_ISO)} />
           <StatLine label="Maturity" value={formatLongDate(FD_END_ISO)} />
-          <StatLine label="Monthly" value={formatMoney(FD_MONTHLY_AMOUNT)} />
         </div>
 
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <MetricCard
-            icon={<Flame className="h-4 w-4" />}
-            label={matured ? 'Final Streak' : 'Current Streak'}
-            value={`${streak} ${streak === 1 ? 'month' : 'months'}`}
-            hint={
-              matured
-                ? 'Deposit matured'
-                : streak > 0
-                  ? 'On schedule'
-                  : 'Deposit this month to start'
-            }
-            accent={streak > 0}
-          />
-          <MetricCard
             icon={<CalendarCheck2 className="h-4 w-4" />}
-            label="Installments Contributed"
-            value={`${contributed.size}`}
-            hint={`of ${FD_INSTALLMENTS} months`}
+            label="Days Elapsed"
+            value={`${elapsedDays}`}
+            hint={`of ${totalDays} days`}
           />
           <MetricCard
             icon={<Target className="h-4 w-4" />}
-            label="Target Remaining"
-            value={formatMoney(remaining)}
-            hint={`${FD_INSTALLMENTS - contributed.size} installments left`}
+            label={matured ? 'Status' : 'Days Remaining'}
+            value={matured ? 'Matured' : `${daysRemaining}`}
+            hint={matured ? `since ${formatLongDate(FD_END_ISO)}` : 'until maturity'}
+            accent={!matured}
           />
-        </div>
-      </Panel>
-
-      {/* Ledger — one row per installment date, tap to toggle */}
-      <Panel>
-        <PanelHeading icon={<Landmark className="h-4 w-4" />} title="ABA Fixed Deposit Ledger">
-          {matured ? <ArchivePill /> : null}
-        </PanelHeading>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {formatMoney(FD_MONTHLY_AMOUNT)} · Monthly · {formatLongDate(FD_START_ISO)} →{' '}
-          {formatLongDate(FD_END_ISO)}
-        </p>
-
-        <div className="mt-5 divide-y divide-border overflow-hidden rounded-xl border border-border">
-          {FD_INSTALLMENT_DATES.map((iso, index) => {
-            const isContributed = mounted && contributed.has(index);
-            // Matured mirrors an archived year: every row renders as history,
-            // never as a control, however far in the past it is.
-            const isOpen = mounted && !matured && today !== '' && iso <= today;
-            const dateLabel = formatLongDate(iso);
-
-            const status = isContributed
-              ? 'Deposited'
-              : isOpen
-                ? 'Not yet deposited'
-                : `Opens ${dateLabel}`;
-            const label = `${dateLabel} — ${formatMoney(FD_MONTHLY_AMOUNT)} — ${
-              isContributed ? 'deposited' : 'not deposited'
-            }`;
-
-            const rowClass = cn(
-              'flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition-colors duration-200',
-              isContributed && 'bg-emerald-500/10 dark:bg-emerald-500/5',
-            );
-            const badgeClass = cn(
-              'flex h-8 w-8 shrink-0 items-center justify-center rounded-full border',
-              isContributed
-                ? 'border-emerald-500/40 dark:border-emerald-500/30 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                : 'border-border bg-muted/50 text-muted-foreground',
-            );
-
-            const body = (
-              <>
-                <span className="flex items-center gap-3">
-                  <span className={badgeClass} aria-hidden="true">
-                    {isContributed ? (
-                      <Check className="h-4 w-4" />
-                    ) : isOpen ? (
-                      <Banknote className="h-4 w-4" />
-                    ) : (
-                      <Lock className="h-4 w-4" />
-                    )}
-                  </span>
-                  <span>
-                    <p className="text-sm font-medium text-foreground">{dateLabel}</p>
-                    <p className="text-xs text-muted-foreground">{status}</p>
-                  </span>
-                </span>
-                <span className="text-sm font-semibold tabular-nums text-foreground">
-                  {formatMoney(FD_MONTHLY_AMOUNT)}
-                </span>
-              </>
-            );
-
-            if (!isOpen) {
-              return (
-                <div
-                  key={iso}
-                  title={label}
-                  aria-label={label}
-                  className={cn(rowClass, !isContributed && 'opacity-60')}
-                >
-                  {body}
-                </div>
-              );
-            }
-
-            return (
-              <button
-                key={iso}
-                type="button"
-                onClick={() => onToggleInstallment(index)}
-                aria-pressed={isContributed}
-                aria-label={label}
-                title={label}
-                className={cn(
-                  rowClass,
-                  'cursor-pointer hover:bg-muted/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-inset',
-                )}
-              >
-                {body}
-              </button>
-            );
-          })}
+          <MetricCard
+            icon={<Banknote className="h-4 w-4" />}
+            label="Principal"
+            value={formatMoney(FD_AMOUNT)}
+            hint={`${FD_PLAN_TYPE} plan · ${FD_BANK}`}
+          />
         </div>
 
         <p className="mt-5 text-center text-xs text-muted-foreground">
           {matured
-            ? `This fixed deposit matured on ${formatLongDate(FD_END_ISO)} — the ledger is shown exactly as it was recorded.`
-            : "Tap an installment once that month's $100 goes into the deposit. Past installments can still be corrected."}
+            ? `This fixed deposit matured on ${formatLongDate(FD_END_ISO)}.`
+            : `"${FD_PLAN_TYPE}" is ABA's plan category for this term, not a recurring deposit — the full ${formatMoney(FD_AMOUNT)} was already deposited on ${formatLongDate(FD_START_ISO)}.`}
         </p>
       </Panel>
     </div>
@@ -2009,8 +1907,6 @@ export default function SavingsPage() {
      start equal, and the picker only ever moves the second one backwards. */
   const [currentMonth, setCurrentMonth] = useState(BOOTSTRAP_MONTH);
   const [activeMonth, setActiveMonth] = useState(BOOTSTRAP_MONTH);
-  /* Not year-keyed, so it lives outside `vault` entirely — see FIXED_DEPOSIT_KEY. */
-  const [fdContributed, setFdContributed] = useState<number[]>([]);
 
   useEffect(() => {
     const now = new Date();
@@ -2020,7 +1916,6 @@ export default function SavingsPage() {
 
     const stored =
       readStored(VAULT_KEY, makeVaultParser(year, month)) ?? migrateLegacyVault(year, month);
-    setFdContributed(readStored(FIXED_DEPOSIT_KEY, parseMonthIndexes) ?? []);
 
     // Saving began on 2026-01-01, before this tracker existed. On the very first
     // visit, backfill every day of that year through today so the app matches
@@ -2061,11 +1956,6 @@ export default function SavingsPage() {
     }
   }, [vault, mounted]);
 
-  useEffect(() => {
-    if (!mounted) return;
-    writeStored(FIXED_DEPOSIT_KEY, fdContributed);
-  }, [fdContributed, mounted]);
-
   /* ---------------------------- Active year view --------------------------- */
 
   const activeKey = String(activeYear);
@@ -2099,7 +1989,6 @@ export default function SavingsPage() {
   const loggedSet = useMemo(() => new Set(record.daily), [record.daily]);
   const weekSet = useMemo(() => new Set(record.challenge), [record.challenge]);
   const cashSet = useMemo(() => new Set(record.cash), [record.cash]);
-  const fdSet = useMemo(() => new Set(fdContributed), [fdContributed]);
 
   /* ------------------------------ Aggregates ----------------------------- */
 
@@ -2113,13 +2002,13 @@ export default function SavingsPage() {
   const monthBalances = record.monthly[activeMonth] ?? EMPTY_BALANCES;
   const monthSaved = useMemo(() => bucketsTotal(monthBalances), [monthBalances]);
   const cashSaved = record.cash.length * CASH_AMOUNT;
-  /* Excluded from netWealth/yearTarget deliberately: the fixed deposit spans
-     Jan 2026 → Jan 2027, crossing a calendar-year boundary, so it has no
-     single `activeYear` to belong to. It gets its own summary panel instead
-     of being folded into a year-scoped total. */
-  const fdSaved = fdContributed.length * FD_MONTHLY_AMOUNT;
-  const netWealth = dailySaved + challengeSaved + bucketsSaved + cashSaved;
-  const yearTarget = combinedTarget(shape);
+  /* Counted into the active year's total only for the years the deposit was
+     actually held (2026 through 2027) — an archived year before it existed
+     shouldn't show money that wasn't there yet. */
+  const fdCountsForYear = activeYear >= FD_START_YEAR && activeYear <= FD_END_YEAR;
+  const fdSaved = fdCountsForYear ? FD_AMOUNT : 0;
+  const netWealth = dailySaved + challengeSaved + bucketsSaved + cashSaved + fdSaved;
+  const yearTarget = combinedTarget(shape) + fdSaved;
 
   /* ------------------------------- Actions ------------------------------- */
 
@@ -2259,19 +2148,6 @@ export default function SavingsPage() {
     [maxMonth, updateActiveYear],
   );
 
-  // Independent of `vault`/`readOnly`: the deposit closes for good once it
-  // matures, rather than locking and unlocking with the Year Switcher.
-  const toggleFdInstallment = useCallback(
-    (index: number) => {
-      if (today === '' || today >= FD_END_ISO) return;
-      if (index < 0 || index >= FD_INSTALLMENTS || FD_INSTALLMENT_DATES[index] > today) return;
-      setFdContributed((prev) =>
-        prev.includes(index) ? prev.filter((entry) => entry !== index) : [...prev, index].sort((a, b) => a - b),
-      );
-    },
-    [today],
-  );
-
   /* Switching year re-points the month picker at that year's last open month,
      so an archive opens on December and the live year on the current month. */
   const changeYear = useCallback(
@@ -2351,12 +2227,13 @@ export default function SavingsPage() {
               />
             </div>
 
-            {/* Breakdown of the four contributing strategies */}
-            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {/* Breakdown of the five contributing strategies */}
+            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
               <StatLine label="Daily $1.25" value={formatMoney(dailySaved)} />
               <StatLine label="52-Week" value={formatMoney(challengeSaved)} />
               <StatLine label="Monthly" value={formatMoney(bucketsSaved)} />
               <StatLine label="Cash Book" value={formatMoney(cashSaved)} />
+              <StatLine label="Fixed Deposit" value={formatMoney(fdSaved)} />
             </div>
           </div>
         </header>
@@ -2433,13 +2310,7 @@ export default function SavingsPage() {
           </TabsContent>
 
           <TabsContent value="fd">
-            <FdPanel
-              mounted={mounted}
-              today={today}
-              contributed={fdSet}
-              saved={fdSaved}
-              onToggleInstallment={toggleFdInstallment}
-            />
+            <FdPanel mounted={mounted} today={today} />
           </TabsContent>
         </Tabs>
 
