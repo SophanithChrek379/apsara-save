@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Banknote,
+  BookOpen,
   CalendarCheck2,
   CalendarDays,
   CalendarRange,
@@ -166,6 +167,17 @@ function writeMonth(
 }
 
 /* -------------------------------------------------------------------------- */
+/*                  Strategy D — monthly $100 cash-book deposit                */
+/*  One real bill, once a month — no sub-categories and nothing partial, so    */
+/*  the only thing worth recording is which months have taken their bill.      */
+/* -------------------------------------------------------------------------- */
+
+const CASH_AMOUNT = 100;
+
+/** $100 × 12 calendar months = $1,200/yr. */
+const CASH_TARGET = CASH_AMOUNT * MONTHS_PER_YEAR;
+
+/* -------------------------------------------------------------------------- */
 /*                            Formatting helpers                              */
 /* -------------------------------------------------------------------------- */
 
@@ -286,9 +298,10 @@ function getYearShape(year: number): YearShape {
   return shape;
 }
 
-/** Combined goal for a single year: daily habit + full ladder + twelve paydays. */
+/** Combined goal for a single year: daily habit + full ladder + twelve
+    paydays + twelve cash-book bills. */
 function combinedTarget(shape: YearShape): number {
-  return shape.dailyTarget + CHALLENGE_TARGET + PAYDAY_TOTAL * MONTHS_PER_YEAR;
+  return shape.dailyTarget + CHALLENGE_TARGET + PAYDAY_TOTAL * MONTHS_PER_YEAR + CASH_TARGET;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -344,6 +357,16 @@ function computeWeekStreak(completed: Set<number>): number {
   return streak;
 }
 
+/** Consecutive deposited months ending at the furthest month marked. */
+function computeMonthStreak(completed: Set<number>): number {
+  let streak = 0;
+  for (let month = MONTHS_PER_YEAR - 1; month >= 0; month -= 1) {
+    if (completed.has(month)) streak += 1;
+    else if (streak > 0) break;
+  }
+  return streak;
+}
+
 /**
  * Every tracked date from Jan 1 up to and including `iso`.
  * Used to backfill deposits that were made before this app existed.
@@ -372,13 +395,17 @@ type YearRecord = {
       be dropped a second time. Kept apart from the balances because a hand-
       edited balance that happens to equal the quota is not a payday. */
   injected: number[];
+  /** Calendar months (0 = January) whose $100 bill has been carried to the
+      cash book. A flat list rather than an amount, since a deposit is always
+      exactly one physical bill — there is nothing partial to record. */
+  cash: number[];
 };
 
-/** `{ '2026': { daily, challenge, monthly, injected }, '2027': { … } }` */
+/** `{ '2026': { daily, challenge, monthly, injected, cash }, '2027': { … } }` */
 type Vault = Record<string, YearRecord>;
 
 function emptyRecord(): YearRecord {
-  return { daily: [], challenge: [], monthly: emptyLedger(), injected: [] };
+  return { daily: [], challenge: [], monthly: emptyLedger(), injected: [], cash: [] };
 }
 
 /* Stable stand-in for a year with nothing saved yet. Frozen and shared so the
@@ -389,6 +416,7 @@ const EMPTY_RECORD: YearRecord = Object.freeze({
   challenge: Object.freeze([]) as unknown as number[],
   monthly: Object.freeze(emptyLedger()) as unknown as MonthlyLedger,
   injected: Object.freeze([]) as unknown as number[],
+  cash: Object.freeze([]) as unknown as number[],
 });
 
 /* Same idea one level down: the stand-in for a month slot that a hand-mangled
@@ -399,7 +427,8 @@ function isEmptyRecord(record: YearRecord): boolean {
   return (
     record.daily.length === 0 &&
     record.challenge.length === 0 &&
-    ledgerTotal(record.monthly) === 0
+    ledgerTotal(record.monthly) === 0 &&
+    record.cash.length === 0
   );
 }
 
@@ -532,6 +561,7 @@ function makeVaultParser(currentYear: number, currentMonth: number) {
         injected:
           parseMonthIndexes(row.injected) ??
           monthly.flatMap((month, index) => (isMonthFunded(month) ? [index] : [])),
+        cash: parseMonthIndexes(row.cash) ?? [],
       };
     }
 
@@ -560,6 +590,8 @@ function migrateLegacyVault(currentYear: number, currentMonth: number): Vault {
     challenge: readStored(LEGACY_CHALLENGE_KEY, parseWeeks) ?? [],
     monthly,
     injected: monthly.flatMap((month, index) => (isMonthFunded(month) ? [index] : [])),
+    // No legacy key predates this strategy — every migrated year starts empty.
+    cash: [],
   };
 
   return isEmptyRecord(record) ? {} : { [String(LEGACY_YEAR)]: record };
@@ -1494,6 +1526,196 @@ function BucketsPanel({
 }
 
 /* -------------------------------------------------------------------------- */
+/*                    Tab D — monthly $100 cash-book deposit                  */
+/* -------------------------------------------------------------------------- */
+
+type CashPanelProps = {
+  mounted: boolean;
+  year: number;
+  readOnly: boolean;
+  /** Highest month index (0 = Jan) the calendar has reached for this year. */
+  maxMonth: number;
+  deposited: Set<number>;
+  saved: number;
+  onToggleMonth: (month: number) => void;
+};
+
+function CashPanel({
+  mounted,
+  year,
+  readOnly,
+  maxMonth,
+  deposited,
+  saved,
+  onToggleMonth,
+}: CashPanelProps) {
+  const streak = useMemo(() => computeMonthStreak(deposited), [deposited]);
+  const remaining = CASH_TARGET - saved;
+  const percent = (saved / CASH_TARGET) * 100;
+  const yearLabel = mounted ? `${year}` : PLACEHOLDER;
+
+  return (
+    <div className="flex flex-col gap-5">
+      <Panel>
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Cash Book Saved
+            </p>
+            <p className="mt-1 text-3xl font-semibold tabular-nums tracking-tight text-emerald-600 dark:text-emerald-400 sm:text-4xl">
+              {formatMoney(saved)}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Annual Target
+            </p>
+            <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-foreground/80">
+              {formatMoney(CASH_TARGET)}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5">
+          <ProgressBar percent={percent} label="Cash book progress" />
+          <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+            <span className="tabular-nums">{percent.toFixed(1)}% complete</span>
+            <span className="tabular-nums">
+              {deposited.size} / {MONTHS_PER_YEAR} months
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <MetricCard
+            icon={<Flame className="h-4 w-4" />}
+            label={readOnly ? 'Final Streak' : 'Current Streak'}
+            value={`${streak} ${streak === 1 ? 'month' : 'months'}`}
+            hint={
+              readOnly
+                ? `${yearLabel} archive`
+                : streak > 0
+                  ? 'Book is filling up'
+                  : 'Deposit this month to start'
+            }
+            accent={streak > 0}
+          />
+          <MetricCard
+            icon={<CalendarCheck2 className="h-4 w-4" />}
+            label="Months Deposited"
+            value={`${deposited.size}`}
+            hint={`of ${MONTHS_PER_YEAR} months`}
+          />
+          <MetricCard
+            icon={<Target className="h-4 w-4" />}
+            label="Target Remaining"
+            value={formatMoney(remaining)}
+            hint={`${MONTHS_PER_YEAR - deposited.size} months left`}
+          />
+        </div>
+      </Panel>
+
+      {/* Ledger — one row per calendar month, tap to toggle */}
+      <Panel>
+        <PanelHeading icon={<BookOpen className="h-4 w-4" />} title="Monthly Cash Book">
+          {readOnly ? <ArchivePill /> : null}
+        </PanelHeading>
+
+        <div className="mt-5 divide-y divide-border overflow-hidden rounded-xl border border-border">
+          {MONTH_NAMES.map((name, index) => {
+            const isDeposited = mounted && deposited.has(index);
+            // Mirrors the week tiles: an archived year opens nothing, so its
+            // rows always render as history rather than as controls.
+            const isOpen = mounted && !readOnly && index <= maxMonth;
+
+            const status = isDeposited
+              ? 'Deposited'
+              : isOpen
+                ? 'Not yet deposited'
+                : `Opens ${name} ${yearLabel}`;
+            const label = `${name} — ${formatMoney(CASH_AMOUNT)} — ${
+              isDeposited ? 'deposited' : 'not deposited'
+            }`;
+
+            const rowClass = cn(
+              'flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition-colors duration-200',
+              isDeposited && 'bg-emerald-500/10 dark:bg-emerald-500/5',
+            );
+            const badgeClass = cn(
+              'flex h-8 w-8 shrink-0 items-center justify-center rounded-full border',
+              isDeposited
+                ? 'border-emerald-500/40 dark:border-emerald-500/30 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                : 'border-border bg-muted/50 text-muted-foreground',
+            );
+
+            const body = (
+              <>
+                <span className="flex items-center gap-3">
+                  <span className={badgeClass} aria-hidden="true">
+                    {isDeposited ? (
+                      <Check className="h-4 w-4" />
+                    ) : isOpen ? (
+                      <Banknote className="h-4 w-4" />
+                    ) : (
+                      <Lock className="h-4 w-4" />
+                    )}
+                  </span>
+                  <span>
+                    <p className="text-sm font-medium text-foreground">
+                      {mounted ? name : PLACEHOLDER}
+                    </p>
+                    <p className="text-xs text-muted-foreground">{status}</p>
+                  </span>
+                </span>
+                <span className="text-sm font-semibold tabular-nums text-foreground">
+                  {formatMoney(CASH_AMOUNT)}
+                </span>
+              </>
+            );
+
+            if (!isOpen) {
+              return (
+                <div
+                  key={name}
+                  title={label}
+                  aria-label={label}
+                  className={cn(rowClass, !isDeposited && 'opacity-60')}
+                >
+                  {body}
+                </div>
+              );
+            }
+
+            return (
+              <button
+                key={name}
+                type="button"
+                onClick={() => onToggleMonth(index)}
+                aria-pressed={isDeposited}
+                aria-label={label}
+                title={label}
+                className={cn(
+                  rowClass,
+                  'cursor-pointer hover:bg-muted/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-inset',
+                )}
+              >
+                {body}
+              </button>
+            );
+          })}
+        </div>
+
+        <p className="mt-5 text-center text-xs text-muted-foreground">
+          {readOnly
+            ? `${yearLabel} has closed — the cash book is shown exactly as it was recorded.`
+            : 'Tap a month once its real $100 bill goes into the book. Past months can still be corrected.'}
+        </p>
+      </Panel>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /*                          Navigation switcher bar                           */
 /* -------------------------------------------------------------------------- */
 
@@ -1501,6 +1723,7 @@ const TAB_DEFS = [
   { id: 'daily', label: 'Daily', Icon: CalendarDays },
   { id: 'weekly', label: 'Weekly', Icon: TrendingUp },
   { id: 'monthly', label: 'Monthly', Icon: Layers },
+  { id: 'cash', label: 'Cash Book', Icon: BookOpen },
 ] as const;
 
 type TabId = (typeof TAB_DEFS)[number]['id'];
@@ -1630,6 +1853,7 @@ export default function SavingsPage() {
 
   const loggedSet = useMemo(() => new Set(record.daily), [record.daily]);
   const weekSet = useMemo(() => new Set(record.challenge), [record.challenge]);
+  const cashSet = useMemo(() => new Set(record.cash), [record.cash]);
 
   /* ------------------------------ Aggregates ----------------------------- */
 
@@ -1642,7 +1866,8 @@ export default function SavingsPage() {
   const bucketsSaved = useMemo(() => ledgerTotal(record.monthly), [record.monthly]);
   const monthBalances = record.monthly[activeMonth] ?? EMPTY_BALANCES;
   const monthSaved = useMemo(() => bucketsTotal(monthBalances), [monthBalances]);
-  const netWealth = dailySaved + challengeSaved + bucketsSaved;
+  const cashSaved = record.cash.length * CASH_AMOUNT;
+  const netWealth = dailySaved + challengeSaved + bucketsSaved + cashSaved;
   const yearTarget = combinedTarget(shape);
 
   /* ------------------------------- Actions ------------------------------- */
@@ -1767,6 +1992,22 @@ export default function SavingsPage() {
     });
   }, [activeMonth, monthLocked, updateActiveYear]);
 
+  // Real-calendar gated, not tied to the Monthly tab's picker: a month opens
+  // once the calendar reaches it and stays correctable after, mirroring how
+  // past days can be fixed on the Daily tab.
+  const toggleCashMonth = useCallback(
+    (month: number) => {
+      if (month < 0 || month > maxMonth) return;
+      updateActiveYear((record) => ({
+        ...record,
+        cash: record.cash.includes(month)
+          ? record.cash.filter((entry) => entry !== month)
+          : [...record.cash, month].sort((a, b) => a - b),
+      }));
+    },
+    [maxMonth, updateActiveYear],
+  );
+
   /* Switching year re-points the month picker at that year's last open month,
      so an archive opens on December and the live year on the current month. */
   const changeYear = useCallback(
@@ -1846,11 +2087,12 @@ export default function SavingsPage() {
               />
             </div>
 
-            {/* Breakdown of the three contributing strategies */}
-            <div className="mt-5 grid grid-cols-3 gap-3">
+            {/* Breakdown of the four contributing strategies */}
+            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <StatLine label="Daily $1.25" value={formatMoney(dailySaved)} />
               <StatLine label="52-Week" value={formatMoney(challengeSaved)} />
               <StatLine label="Monthly" value={formatMoney(bucketsSaved)} />
+              <StatLine label="Cash Book" value={formatMoney(cashSaved)} />
             </div>
           </div>
         </header>
@@ -1863,7 +2105,7 @@ export default function SavingsPage() {
         >
           {/* Surface and idle text come from the component's own `bg-muted` /
               `text-muted-foreground`; only layout and the border are set here. */}
-          <TabsList className="grid w-full grid-cols-3 gap-1 rounded-xl border border-border p-1 group-data-horizontal/tabs:h-auto">
+          <TabsList className="grid w-full grid-cols-4 gap-1 rounded-xl border border-border p-1 group-data-horizontal/tabs:h-auto">
             {TAB_DEFS.map(({ id, label, Icon }) => (
               <TabsTrigger key={id} value={id} className={TRIGGER_CLASS}>
                 <Icon className="h-4 w-4" />
@@ -1911,6 +2153,18 @@ export default function SavingsPage() {
               onFund={fundBucket}
               onReset={resetBucket}
               onPayday={injectPayday}
+            />
+          </TabsContent>
+
+          <TabsContent value="cash">
+            <CashPanel
+              mounted={mounted}
+              year={activeYear}
+              readOnly={readOnly}
+              maxMonth={maxMonth}
+              deposited={cashSet}
+              saved={cashSaved}
+              onToggleMonth={toggleCashMonth}
             />
           </TabsContent>
         </Tabs>

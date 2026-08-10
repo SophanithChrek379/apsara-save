@@ -40,3 +40,25 @@ test('progress bars expose full ARIA value range', async ({ page }) => {
   await expect(bar).toHaveAttribute('aria-valuenow');
   await expect(bar).toHaveAttribute('aria-label');
 });
+
+test('cash book tab toggles the current month and updates the tally', async ({ page }) => {
+  await page.goto('/savings');
+
+  const cashTab = page.getByRole('tab', { name: /cash book/i });
+  await cashTab.click();
+  await expect(cashTab).toHaveAttribute('aria-selected', 'true');
+
+  const monthName = new Date().toLocaleString('en-US', { month: 'long' });
+  const row = page.getByRole('button', { name: new RegExp(`^${monthName} — \\$100\\.00`) });
+  await expect(row).toBeVisible();
+  await expect(row).toHaveAttribute('aria-pressed', 'false');
+
+  await row.click();
+  await expect(row).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('1 / 12 months')).toBeVisible();
+
+  // Un-toggling corrects a mistaken entry, same as the Daily and Weekly tabs.
+  await row.click();
+  await expect(row).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByText('0 / 12 months')).toBeVisible();
+});
