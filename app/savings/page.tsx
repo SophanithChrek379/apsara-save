@@ -1622,8 +1622,14 @@ type TabId = (typeof TAB_DEFS)[number]['id'];
    dark rule carries an extra `.dark` in its selector, so it would outrank an
    unprefixed override no matter the class order. Restating it with a matching
    modifier set lets twMerge drop the token version outright instead. */
+/* Below `sm`, four side-by-side labels don't fit their grid column at any
+   font size that stays legible — "Cash Book" and "Fixed Deposit" overflowed
+   `whitespace-nowrap` and bled into the neighboring icon. Stacking icon over
+   label shortens each line to a single word, which fits; `sm:` restores the
+   wider, single-row layout once there's room for it. */
 const TRIGGER_CLASS = cn(
-  'h-11 rounded-lg text-sm font-semibold',
+  'h-auto min-h-11 flex-col gap-0.5 whitespace-normal px-1 py-1.5 text-center text-[11px] leading-tight rounded-lg font-semibold',
+  'sm:h-11 sm:flex-row sm:gap-1.5 sm:whitespace-nowrap sm:px-1.5 sm:py-0.5 sm:text-sm',
   'data-[state=active]:bg-emerald-500 data-[state=active]:text-white',
   'dark:data-[state=active]:bg-emerald-500 dark:data-[state=active]:text-emerald-950',
   'dark:data-[state=active]:border-transparent',
