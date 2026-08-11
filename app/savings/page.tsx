@@ -67,15 +67,53 @@ const MAX_YEAR = 2200;
 
 const DAILY_AMOUNT = 1.25;
 
+/* Where the $1.25/day actually lands — the ACLEDA mobile app, saving sub-account. */
+const DAILY_BANK = 'ACLEDA';
+const DAILY_ACCOUNT = 'USD Account (Saving)';
+
 /* -------------------------------------------------------------------------- */
 /*                  Strategy C — monthly sinking-fund buckets                 */
 /* -------------------------------------------------------------------------- */
 
+/* Each bucket lives in a different real account, split across three banks —
+   this is what makes them sinking funds rather than one shared balance. */
 const BUCKET_DEFS = [
-  { id: 'emergency', label: 'Emergency', target: 70, Icon: ShieldCheck, blurb: 'Rainy-day cushion' },
-  { id: 'retirement', label: 'Retirement', target: 47, Icon: PiggyBank, blurb: 'Long-horizon compounding' },
-  { id: 'trip', label: 'Trip / Vacation', target: 39, Icon: Plane, blurb: 'Next getaway fund' },
-  { id: 'clothes', label: 'Clothes', target: 39, Icon: Shirt, blurb: 'Wardrobe refresh' },
+  {
+    id: 'emergency',
+    label: 'Emergency',
+    target: 70,
+    Icon: ShieldCheck,
+    blurb: 'Rainy-day cushion',
+    bank: 'ABA',
+    account: 'USD Account (Saving)',
+  },
+  {
+    id: 'retirement',
+    label: 'Retirement',
+    target: 47,
+    Icon: PiggyBank,
+    blurb: 'Long-horizon compounding',
+    bank: 'ABA',
+    account: 'USD Account (Payroll)',
+  },
+  {
+    id: 'trip',
+    label: 'Trip / Vacation',
+    target: 39,
+    Icon: Plane,
+    blurb: 'Next getaway fund',
+    bank: 'ACLEDA',
+    account: 'USD Account (Mobile Wallet)',
+  },
+  {
+    id: 'clothes',
+    label: 'Clothes',
+    target: 39,
+    Icon: Shirt,
+    blurb: 'Wardrobe refresh',
+    bank: 'PPCBank',
+    account: 'USD Account (Saving)',
+  },
 ] as const;
 
 type BucketId = (typeof BUCKET_DEFS)[number]['id'];
@@ -955,6 +993,13 @@ function DailyPanel({
           <StatLine label="Target" value={formatMoney(shape.dailyTarget)} />
         </div>
 
+        {/* Where the money actually lands — routing info, not a tracking
+            stat, so it reads as a caption rather than a fifth/sixth tile. */}
+        <p className="mt-3 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Landmark className="h-3 w-3" aria-hidden="true" />
+          Saved to {DAILY_BANK} · {DAILY_ACCOUNT}
+        </p>
+
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <MetricCard
             icon={<Flame className="h-4 w-4" />}
@@ -1209,7 +1254,7 @@ function BucketsPanel({
       </Panel>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {BUCKET_DEFS.map(({ id, label, target, Icon, blurb }) => {
+        {BUCKET_DEFS.map(({ id, label, target, Icon, blurb, bank, account }) => {
           const balance = balances[id];
           const percent = (balance / target) * 100;
           const funded = balance >= target;
@@ -1260,6 +1305,11 @@ function BucketsPanel({
                   <ProgressBar percent={percent} label={`${label} bucket progress`} />
                 </div>
               </div>
+
+              <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Landmark className="h-3 w-3" aria-hidden="true" />
+                {bank} · {account}
+              </p>
 
               {/* Per-bucket controls — hidden once the year closes.
                   The pair is deliberately not a stepper: a bucket is either
