@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
+  Ban,
   Banknote,
   BookOpen,
   CalendarCheck2,
@@ -22,6 +23,7 @@ import {
   Shirt,
   ShieldCheck,
   Target,
+  Undo2,
   Wallet,
 } from 'lucide-react';
 
@@ -424,13 +426,19 @@ type YearRecord = {
       cash book. A flat list rather than an amount, since a deposit is always
       exactly one physical bill — there is nothing partial to record. */
   cash: number[];
+  /** Months deliberately forgone — an expense-heavy month whose remaining
+      quota is never going to be met. Kept apart from `injected`, which means
+      the opposite (funded), so the two lists are mutually exclusive and a
+      skipped month's shortfall can be dropped from the yearly target instead
+      of sitting there as a permanently unmet quota. */
+  skipped: number[];
 };
 
 /** `{ '2026': { daily, monthly, injected, cash }, '2027': { … } }` */
 type Vault = Record<string, YearRecord>;
 
 function emptyRecord(): YearRecord {
-  return { daily: [], monthly: emptyLedger(), injected: [], cash: [] };
+  return { daily: [], monthly: emptyLedger(), injected: [], cash: [], skipped: [] };
 }
 
 /* Stable stand-in for a year with nothing saved yet. Frozen and shared so the
@@ -441,6 +449,7 @@ const EMPTY_RECORD: YearRecord = Object.freeze({
   monthly: Object.freeze(emptyLedger()) as unknown as MonthlyLedger,
   injected: Object.freeze([]) as unknown as number[],
   cash: Object.freeze([]) as unknown as number[],
+  skipped: Object.freeze([]) as unknown as number[],
 });
 
 /* Same idea one level down: the stand-in for a month slot that a hand-mangled
@@ -562,19 +571,23 @@ function makeVaultParser(currentYear: number, currentMonth: number) {
       const row = entry as Record<string, unknown>;
       const foldMonth = lastOpenMonth(year, currentYear, currentMonth);
       const monthly = parseLedger(row.monthly, foldMonth) ?? emptyLedger();
+      // Records written before injections were tracked have no list. Any month
+      // already sitting at full quota is taken to have had its payday, which
+      // stops the upgrade itself from handing out a second allocation.
+      const injected =
+        parseMonthIndexes(row.injected) ??
+        monthly.flatMap((month, index) => (isMonthFunded(month) ? [index] : []));
 
       // A year whose `daily` is corrupt still keeps its buckets: each branch
       // falls back on its own rather than dropping the whole year.
       vault[key] = {
         daily: makeDateParser(getYearShape(year))(row.daily) ?? [],
         monthly,
-        // Records written before injections were tracked have no list. Any month
-        // already sitting at full quota is taken to have had its payday, which
-        // stops the upgrade itself from handing out a second allocation.
-        injected:
-          parseMonthIndexes(row.injected) ??
-          monthly.flatMap((month, index) => (isMonthFunded(month) ? [index] : [])),
+        injected,
         cash: parseMonthIndexes(row.cash) ?? [],
+        // A hand-edited payload could claim a month is both funded and forgone;
+        // injected wins, since money that actually landed outranks a flag.
+        skipped: (parseMonthIndexes(row.skipped) ?? []).filter((month) => !injected.includes(month)),
       };
     }
 
@@ -604,6 +617,7 @@ function migrateLegacyVault(currentYear: number, currentMonth: number): Vault {
     injected: monthly.flatMap((month, index) => (isMonthFunded(month) ? [index] : [])),
     // No legacy key predates this strategy — every migrated year starts empty.
     cash: [],
+    skipped: [],
   };
 
   return isEmptyRecord(record) ? {} : { [String(LEGACY_YEAR)]: record };
@@ -750,12 +764,14 @@ function PrimaryAction({
   disabled,
   onClick,
   ariaLabel,
+  className,
 }: {
   icon: ReactNode;
   label: string;
   disabled: boolean;
   onClick: () => void;
   ariaLabel?: string;
+  className?: string;
 }) {
   return (
     <Button
@@ -769,6 +785,7 @@ function PrimaryAction({
         'focus-visible:border-emerald-500 focus-visible:ring-emerald-500/40',
         'disabled:pointer-events-auto disabled:cursor-not-allowed disabled:opacity-100',
         'disabled:border-border disabled:bg-card disabled:text-muted-foreground',
+        className,
       )}
     >
       {icon}
@@ -786,6 +803,42 @@ function ArchiveNotice({ year }: { year: number }) {
     <div className="flex min-h-[64px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/30 px-5 py-4 text-sm font-medium text-muted-foreground">
       <History className="h-4 w-4" />
       Viewing the {year} archive — check-ins are locked.
+    </div>
+  );
+}
+
+/**
+ * Stands in for the payday trigger once a month has been marked skipped.
+ * Reversible by design — an expense month can turn out better than expected,
+ * or get skipped by mistake — so it carries its own way back rather than
+ * requiring buckets to be cleared by hand to reopen it.
+ */
+function SkippedNotice({
+  monthName,
+  disabled,
+  onUndo,
+}: {
+  monthName: string;
+  disabled: boolean;
+  onUndo: () => void;
+}) {
+  return (
+    <div className="flex min-h-[64px] w-full flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-border bg-muted/30 px-5 py-4">
+      <p className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+        <Ban className="h-4 w-4 shrink-0" aria-hidden="true" />
+        {monthName} skipped — its target isn&apos;t counted against the year.
+      </p>
+      <Button
+        type="button"
+        variant="outline"
+        onClick={onUndo}
+        disabled={disabled}
+        aria-label={`Undo skip for ${monthName}`}
+        className="h-9 gap-1.5 border-border bg-card px-3 text-xs text-foreground/80 hover:border-muted-foreground/40 hover:bg-muted/50 hover:text-foreground focus-visible:ring-emerald-400/40 disabled:opacity-40"
+      >
+        <Undo2 className="h-3.5 w-3.5" />
+        Undo
+      </Button>
     </div>
   );
 }
@@ -1140,9 +1193,18 @@ type BucketsPanelProps = {
   yearSaved: number;
   /** Whether `month` has already taken its one payday drop. */
   injected: boolean;
+  /** Whether `month` has been deliberately forgone. */
+  skipped: boolean;
+  /** Full quota, or — once skipped — frozen at whatever `month` already
+      holds, so a skipped month always reads as fully settled. */
+  monthQuota: number;
+  /** Full year quota, with every skipped month's shortfall removed. */
+  yearlyQuota: number;
   onFund: (id: BucketId) => void;
   onReset: (id: BucketId) => void;
   onPayday: () => void;
+  onSkip: () => void;
+  onUnskip: () => void;
 };
 
 function BucketsPanel({
@@ -1156,9 +1218,14 @@ function BucketsPanel({
   monthSaved,
   yearSaved,
   injected,
+  skipped,
+  monthQuota,
+  yearlyQuota,
   onFund,
   onReset,
   onPayday,
+  onSkip,
+  onUnskip,
 }: BucketsPanelProps) {
   /* Both the month and the year are clock-derived, so neither can be named
      until mount — a statically built page would otherwise ship the build's
@@ -1166,6 +1233,10 @@ function BucketsPanel({
   const monthName = mounted ? MONTH_NAMES[month] : PLACEHOLDER;
   const monthAbbr = mounted ? MONTH_LABELS[month] : PLACEHOLDER;
   const yearLabel = mounted ? `${year}` : PLACEHOLDER;
+  // A skipped month freezes its own quota at whatever it already holds, so
+  // dividing by it would be 0/0 for the common case of a month skipped before
+  // anything was funded — read that as "fully settled" rather than empty.
+  const monthPercent = monthQuota > 0 ? (monthSaved / monthQuota) * 100 : 100;
 
   return (
     <div className="flex flex-col gap-5">
@@ -1186,27 +1257,46 @@ function BucketsPanel({
         )}
       </div>
 
-      {/* Master allocation trigger, or the archive marker that replaces it */}
+      {/* Master allocation trigger, or whichever notice replaces it: the
+          archive marker for a closed year, or the skip notice for a month
+          that was deliberately forgone. */}
       {readOnly ? (
         <ArchiveNotice year={year} />
-      ) : (
+      ) : skipped ? (
+        <SkippedNotice monthName={monthName} disabled={!mounted} onUndo={onUnskip} />
+      ) : injected ? (
         <PrimaryAction
           onClick={onPayday}
-          // Held shut until mount, like the daily button: before that the month
-          // it would file the drop against has not been named yet.
-          disabled={!mounted || injected}
-          ariaLabel={
-            injected
-              ? `${monthName} payday allocation already applied`
-              : `Inject the ${monthName} payday allocation of ${formatMoney(PAYDAY_TOTAL)}`
-          }
-          icon={injected ? <Check className="h-4 w-4" /> : <Banknote className="h-4 w-4" />}
-          label={
-            injected
-              ? `${monthName} Allocation Applied`
-              : `Inject ${monthName} Allocation (${formatMoney(PAYDAY_TOTAL)})`
-          }
+          disabled
+          ariaLabel={`${monthName} payday allocation already applied`}
+          icon={<Check className="h-4 w-4" />}
+          label={`${monthName} Allocation Applied`}
         />
+      ) : (
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <PrimaryAction
+            onClick={onPayday}
+            // Held shut until mount, like the daily button: before that the
+            // month it would file the drop against has not been named yet.
+            disabled={!mounted}
+            ariaLabel={`Inject the ${monthName} payday allocation of ${formatMoney(PAYDAY_TOTAL)}`}
+            icon={<Banknote className="h-4 w-4" />}
+            label={`Inject ${monthName} Allocation (${formatMoney(PAYDAY_TOTAL)})`}
+            className="flex-1"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onSkip}
+            disabled={!mounted}
+            aria-label={`Skip the ${monthName} monthly allocation — an expense-heavy month with nothing left for it`}
+            title={`Mark ${monthName} as skipped; its target won't count against the year`}
+            className="h-auto min-h-16 gap-1.5 rounded-xl border-border bg-card px-4 text-xs font-semibold whitespace-normal text-foreground/80 hover:border-muted-foreground/40 hover:bg-muted/50 hover:text-foreground focus-visible:ring-emerald-400/40 sm:w-32"
+          >
+            <Ban className="h-3.5 w-3.5" />
+            Skip Month
+          </Button>
+        </div>
       )}
 
       <Panel>
@@ -1224,32 +1314,36 @@ function BucketsPanel({
               Monthly Quota
             </p>
             <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-foreground/80">
-              {formatMoney(PAYDAY_TOTAL)}
+              {formatMoney(monthQuota)}
             </p>
+            {skipped ? (
+              <p className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                Skipped
+              </p>
+            ) : null}
           </div>
         </div>
 
         <div className="mt-5">
           <ProgressBar
-            percent={(monthSaved / PAYDAY_TOTAL) * 100}
+            percent={monthPercent}
             label={`${monthName} bucket allocation progress`}
           />
           <p className="mt-2 text-xs text-muted-foreground">
             {readOnly
               ? `Closing balances carried by the ${monthName} ${yearLabel} buckets.`
-              : injected
-                ? `${monthName} has taken its allocation — one payday drop per month.`
-                : "One tap distributes each bucket's fixed baseline quota in a single concurrent drop."}
+              : skipped
+                ? `${monthName} was skipped — its target isn't counted against ${yearLabel}.`
+                : injected
+                  ? `${monthName} has taken its allocation — one payday drop per month.`
+                  : "One tap distributes each bucket's fixed baseline quota in a single concurrent drop."}
           </p>
         </div>
 
         <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
           <StatLine label={`${monthAbbr} Saved`} value={formatMoney(monthSaved)} />
           <StatLine label={`${yearLabel} To Date`} value={formatMoney(yearSaved)} />
-          <StatLine
-            label="Yearly Quota"
-            value={formatMoney(PAYDAY_TOTAL * MONTHS_PER_YEAR)}
-          />
+          <StatLine label="Yearly Quota" value={formatMoney(yearlyQuota)} />
         </div>
       </Panel>
 
@@ -1338,7 +1432,7 @@ function BucketsPanel({
                     <Button
                       type="button"
                       onClick={() => onFund(id)}
-                      disabled={!mounted || funded}
+                      disabled={!mounted || funded || skipped}
                       aria-label={`Mark ${label} funded for ${monthName}`}
                       title={`Fund ${label} to its ${formatMoney(target)} quota`}
                       className="h-9 gap-1.5 border-emerald-500/40 bg-emerald-500/10 px-3 text-xs text-emerald-600 hover:bg-emerald-500/20 focus-visible:ring-emerald-400/40 disabled:opacity-40 dark:border-emerald-500/30 dark:text-emerald-400"
@@ -1809,7 +1903,22 @@ export default function SavingsPage() {
   const fdCountsForYear = activeYear >= FD_START_YEAR && activeYear <= FD_END_YEAR;
   const fdSaved = fdCountsForYear ? FD_AMOUNT : 0;
   const netWealth = dailySaved + bucketsSaved + cashSaved + fdSaved;
-  const yearTarget = combinedTarget(shape) + fdSaved;
+  const monthSkipped = record.skipped.includes(activeMonth);
+  /* A skipped month's quota freezes at whatever it already holds — nothing
+     more will be asked of it — so the unmet remainder can be dropped from
+     both the tab's own "Yearly Quota" line and the header's combined target
+     without the two ever disagreeing. */
+  const monthQuota = monthSkipped ? monthSaved : PAYDAY_TOTAL;
+  const skippedShortfall = useMemo(
+    () =>
+      record.skipped.reduce(
+        (sum, month) => sum + (PAYDAY_TOTAL - bucketsTotal(record.monthly[month])),
+        0,
+      ),
+    [record.skipped, record.monthly],
+  );
+  const yearlyQuota = PAYDAY_TOTAL * MONTHS_PER_YEAR - skippedShortfall;
+  const yearTarget = combinedTarget(shape) + fdSaved - skippedShortfall;
 
   /* ------------------------------- Actions ------------------------------- */
 
@@ -1858,6 +1967,9 @@ export default function SavingsPage() {
     (id: BucketId) => {
       if (monthLocked) return;
       updateActiveYear((record) => {
+        // A skipped month takes no further funding — it has to be unskipped
+        // first, same as an injected month can't take a second drop.
+        if (record.skipped.includes(activeMonth)) return record;
         const balance = record.monthly[activeMonth][id];
         // A month migrated in above its quota keeps the excess rather than
         // being trimmed back down to the baseline.
@@ -1902,9 +2014,12 @@ export default function SavingsPage() {
   const injectPayday = useCallback(() => {
     if (monthLocked) return;
     updateActiveYear((record) => {
-      // One drop per calendar month. Returning the record untouched is what
-      // makes a second tap — or a double-click — a no-op rather than a doubling.
-      if (record.injected.includes(activeMonth)) return record;
+      // One drop per calendar month, and never onto a month that was marked
+      // skipped — that has to be undone first. Returning the record untouched
+      // is what makes a repeat tap a no-op rather than a doubling.
+      if (record.injected.includes(activeMonth) || record.skipped.includes(activeMonth)) {
+        return record;
+      }
       return {
         ...record,
         monthly: writeMonth(record.monthly, activeMonth, (month) => {
@@ -1916,6 +2031,26 @@ export default function SavingsPage() {
         }),
         injected: [...record.injected, activeMonth].sort((a, b) => a - b),
       };
+    });
+  }, [activeMonth, monthLocked, updateActiveYear]);
+
+  /** Marks the picked month as deliberately forgone — an expense-heavy month
+      with nothing left for its buckets. Reversible via `unskipMonth`. */
+  const skipMonth = useCallback(() => {
+    if (monthLocked) return;
+    updateActiveYear((record) => {
+      if (record.injected.includes(activeMonth) || record.skipped.includes(activeMonth)) {
+        return record;
+      }
+      return { ...record, skipped: [...record.skipped, activeMonth].sort((a, b) => a - b) };
+    });
+  }, [activeMonth, monthLocked, updateActiveYear]);
+
+  const unskipMonth = useCallback(() => {
+    if (monthLocked) return;
+    updateActiveYear((record) => {
+      if (!record.skipped.includes(activeMonth)) return record;
+      return { ...record, skipped: record.skipped.filter((entry) => entry !== activeMonth) };
     });
   }, [activeMonth, monthLocked, updateActiveYear]);
 
@@ -2065,9 +2200,14 @@ export default function SavingsPage() {
               monthSaved={monthSaved}
               yearSaved={bucketsSaved}
               injected={record.injected.includes(activeMonth)}
+              skipped={monthSkipped}
+              monthQuota={monthQuota}
+              yearlyQuota={yearlyQuota}
               onFund={fundBucket}
               onReset={resetBucket}
               onPayday={injectPayday}
+              onSkip={skipMonth}
+              onUnskip={unskipMonth}
             />
           </TabsContent>
 

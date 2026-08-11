@@ -62,6 +62,38 @@ test('cash book tab toggles the current month and updates the tally', async ({ p
   await expect(page.getByText('0 / 12 months')).toBeVisible();
 });
 
+test('monthly tab skip action removes the payday trigger and can be undone', async ({ page }) => {
+  await page.goto('/savings');
+
+  const monthlyTab = page.getByRole('tab', { name: /monthly/i });
+  await monthlyTab.click();
+  await expect(monthlyTab).toHaveAttribute('aria-selected', 'true');
+
+  const injectButton = page.getByRole('button', { name: /^Inject the .* payday allocation/i });
+  await expect(injectButton).toBeVisible();
+
+  const skipButton = page.getByRole('button', { name: /^Skip the .* monthly allocation/i });
+  await skipButton.click();
+
+  await expect(injectButton).not.toBeVisible();
+  await expect(skipButton).not.toBeVisible();
+  await expect(page.getByText(/skipped — its target isn't counted against the year/i)).toBeVisible();
+
+  // A skipped month can no longer take a per-bucket deposit until undone.
+  const fundButton = page
+    .getByRole('tabpanel')
+    .getByRole('button', { name: /^Mark .* funded for/i })
+    .first();
+  await expect(fundButton).toBeDisabled();
+
+  const undoButton = page.getByRole('button', { name: /^Undo skip for/i });
+  await undoButton.click();
+
+  await expect(injectButton).toBeVisible();
+  await expect(skipButton).toBeVisible();
+  await expect(fundButton).toBeEnabled();
+});
+
 test('fixed deposit tab shows a read-only preview with no controls', async ({ page }) => {
   await page.goto('/savings');
 
