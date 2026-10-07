@@ -13,3 +13,4 @@ next-env.d.ts
 
 # Personal permission overrides — .claude/settings.json is the shared one.
 .claude/settings.local.json
+.vercel
