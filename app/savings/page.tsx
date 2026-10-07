@@ -1,10 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Ban,
   Banknote,
   BookOpen,
+  Briefcase,
   CalendarCheck2,
   CalendarDays,
   CalendarRange,
@@ -17,17 +18,24 @@ import {
   Landmark,
   Layers,
   Lock,
+  LockOpen,
+  Pencil,
   Plane,
   PiggyBank,
   RotateCcw,
+  ScanFace,
   Shirt,
   ShieldCheck,
   Target,
+  Trash2,
+  TrendingDown,
+  TrendingUp,
   Undo2,
   Wallet,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Select,
   SelectContent,
@@ -36,6 +44,14 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  BiometricError,
+  hasBiometricLock,
+  isBiometricAvailable,
+  registerBiometricLock,
+  resetBiometricLock,
+  unlockWithBiometric,
+} from '@/lib/biometric-lock';
 import { cn } from '@/lib/utils';
 
 /* -------------------------------------------------------------------------- */
@@ -621,6 +637,33 @@ function migrateLegacyVault(currentYear: number, currentMonth: number): Vault {
   };
 
   return isEmptyRecord(record) ? {} : { [String(LEGACY_YEAR)]: record };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                          Salary — behind Face ID                           */
+/*  Kept under its own key rather than inside the vault: the vault is read on  */
+/*  every mount to draw the totals, and the salary must not be read, held in   */
+/*  state, or rendered until the biometric check has passed. One figure per    */
+/*  calendar year, because pay changes year to year — a raise is that year's   */
+/*  figure, never an edit to a closed year.                                    */
+/* -------------------------------------------------------------------------- */
+
+const SALARY_KEY = 'apsara_salary';
+const MAX_SALARY = 99_999_999.99;
+
+/** `{ '2026': 8000, '2027': 9000 }` — annual USD, keyed by calendar year. */
+type SalaryBook = Record<string, number>;
+
+function parseSalaryBook(value: unknown): SalaryBook | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const book: SalaryBook = {};
+  for (const [key, amount] of Object.entries(value as Record<string, unknown>)) {
+    if (parseYearKey(key) === null) continue;
+    if (typeof amount !== 'number' || !Number.isFinite(amount)) continue;
+    if (amount <= 0 || amount > MAX_SALARY) continue;
+    book[key] = amount;
+  }
+  return book;
 }
 
 function hasSeeded(): boolean {
@@ -1745,6 +1788,499 @@ function FdPanel({ mounted, today }: FdPanelProps) {
 }
 
 /* -------------------------------------------------------------------------- */
+/*                   Tab F — salary vs savings, behind Face ID                */
+/*  Locked is the default, and while locked the salary does not exist on the   */
+/*  client: it is read from storage only after the biometric check passes,     */
+/*  held in this component's state alone, and dropped the moment it locks.     */
+/*  The placeholders are fixed dots, not a blurred real figure — a blur still  */
+/*  puts the number in the DOM. Radix unmounts an inactive tab, so leaving     */
+/*  this tab re-locks it, and so does the app going to the background.         */
+/* -------------------------------------------------------------------------- */
+
+const HIDDEN = '••••••';
+
+type LockState =
+  | { kind: 'checking' }
+  | { kind: 'unavailable' }
+  | { kind: 'locked'; registered: boolean; busy: boolean; error: string | null }
+  | { kind: 'unlocked'; book: SalaryBook };
+
+type SalaryPanelProps = {
+  mounted: boolean;
+  year: number;
+  currentYear: number;
+  /** Months of `year` that have been paid — through the live month, or all
+      twelve once the year has closed. */
+  elapsedMonths: number;
+  /** Net wealth saved in `year`, every strategy combined. */
+  saved: number;
+  /** Combined savings target for `year`. */
+  target: number;
+};
+
+function SalaryPanel({ mounted, year, currentYear, elapsedMonths, saved, target }: SalaryPanelProps) {
+  const [state, setState] = useState<LockState>({ kind: 'checking' });
+  const [editing, setEditing] = useState(false);
+
+  const lock = useCallback(() => {
+    setEditing(false);
+    setState({ kind: 'locked', registered: hasBiometricLock(), busy: false, error: null });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void isBiometricAvailable().then((available) => {
+      if (cancelled) return;
+      if (available) lock();
+      else setState({ kind: 'unavailable' });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [lock]);
+
+  // Coming back to the app should ask again, the way a banking app does.
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') lock();
+    };
+    document.addEventListener('visibilitychange', onHide);
+    return () => document.removeEventListener('visibilitychange', onHide);
+  }, [lock]);
+
+  const unlock = async () => {
+    if (state.kind !== 'locked' || state.busy) return;
+    setState({ ...state, busy: true, error: null });
+    try {
+      if (state.registered) await unlockWithBiometric();
+      else await registerBiometricLock();
+    } catch (error) {
+      setState({
+        kind: 'locked',
+        registered: hasBiometricLock(),
+        busy: false,
+        error: error instanceof BiometricError ? error.message : 'Face ID failed.',
+      });
+      return;
+    }
+    const book = readStored(SALARY_KEY, parseSalaryBook) ?? {};
+    setState({ kind: 'unlocked', book });
+    // Nothing on file for this year yet — open the form instead of a blank card.
+    if (book[String(year)] === undefined) setEditing(true);
+  };
+
+  const writeBook = (next: SalaryBook) => {
+    writeStored(SALARY_KEY, next);
+    setState({ kind: 'unlocked', book: next });
+  };
+
+  const header = (trailing: ReactNode) => (
+    <PanelHeading
+      icon={<Briefcase className="h-4 w-4" />}
+      title={`Salary · ${mounted ? year : PLACEHOLDER}`}
+    >
+      {trailing}
+    </PanelHeading>
+  );
+
+  /* ------------------------------- Locked -------------------------------- */
+
+  if (state.kind !== 'unlocked') {
+    const busy = state.kind === 'checking' || (state.kind === 'locked' && state.busy);
+    return (
+      <div className="flex flex-col gap-5">
+        <Panel>
+          {header(
+            <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              <Lock className="h-3 w-3" aria-hidden="true" />
+              Locked
+            </span>,
+          )}
+          <p className="mt-1 text-xs text-muted-foreground">
+            Your salary stays hidden until you verify it&apos;s you.
+          </p>
+
+          <div aria-hidden="true" className="mt-5 grid select-none grid-cols-3 gap-3">
+            <StatLine label="Annual" value={HIDDEN} />
+            <StatLine label="Earned" value={HIDDEN} />
+            <StatLine label="Saved" value={HIDDEN} />
+          </div>
+        </Panel>
+
+        {state.kind === 'unavailable' ? (
+          <div className="flex min-h-[64px] w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/30 px-5 py-4 text-center text-sm font-medium text-muted-foreground">
+            <ScanFace className="h-4 w-4 shrink-0" aria-hidden="true" />
+            This browser has no Face ID or device unlock — open Apsara Save on your phone to view it.
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-2">
+            <PrimaryAction
+              onClick={() => void unlock()}
+              disabled={!mounted || busy}
+              icon={<ScanFace className="h-4 w-4" />}
+              label={
+                state.kind === 'locked' && !state.registered
+                  ? 'Set Up Face ID to View'
+                  : 'Unlock with Face ID'
+              }
+            />
+            {state.kind === 'locked' && state.error ? (
+              <p role="alert" className="text-xs text-destructive">
+                {state.error}
+              </p>
+            ) : null}
+            {/* A passkey deleted in system settings can never verify again;
+                this is the way out rather than a permanently stuck lock. */}
+            {state.kind === 'locked' && state.registered && state.error ? (
+              <button
+                type="button"
+                onClick={() => {
+                  resetBiometricLock();
+                  lock();
+                }}
+                className="text-[11px] text-muted-foreground underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+              >
+                Set up Face ID again on this device
+              </button>
+            ) : null}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* ------------------------------ Unlocked ------------------------------- */
+
+  const { book } = state;
+  const salary = book[String(year)] ?? null;
+  const previous = book[String(year - 1)] ?? null;
+  const changePct =
+    salary !== null && previous !== null ? ((salary - previous) / previous) * 100 : null;
+
+  // Pay is spread evenly across the year, so "earned so far" is the months
+  // that have been paid — weighing ten months of savings against the full
+  // year's salary would make every rate look worse than it is.
+  const monthly = salary !== null ? salary / MONTHS_PER_YEAR : 0;
+  const earned = monthly * elapsedMonths;
+  const stillToCome = salary !== null ? salary - earned : 0;
+  const leftToSave = Math.max(0, target - saved);
+  const savedRate = earned > 0 ? (saved / earned) * 100 : 0;
+  const neededRate = stillToCome > 0 ? (leftToSave / stillToCome) * 100 : null;
+  const planRate = salary !== null ? (target / salary) * 100 : 0;
+  const isClosed = year !== currentYear;
+
+  const actions = (
+    <div className="flex items-center gap-1">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Edit salary"
+        aria-pressed={editing}
+        onClick={() => setEditing((open) => !open)}
+        className="text-muted-foreground"
+      >
+        <Pencil />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Lock salary"
+        onClick={lock}
+        className="text-muted-foreground"
+      >
+        <LockOpen />
+      </Button>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-5">
+      <Panel>
+        {header(actions)}
+
+        <div className="mt-5 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Annual Salary
+            </p>
+            <p className="mt-1 text-3xl font-semibold tabular-nums tracking-tight text-foreground sm:text-4xl">
+              {salary !== null ? formatMoney(salary) : 'Not set'}
+            </p>
+          </div>
+          {changePct !== null ? (
+            <div className="text-right">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                vs {year - 1}
+              </p>
+              <p
+                className={cn(
+                  'mt-1 flex items-center justify-end gap-1 text-lg font-semibold tabular-nums',
+                  changePct >= 0
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-muted-foreground',
+                )}
+              >
+                {changePct >= 0 ? (
+                  <TrendingUp className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <TrendingDown className="h-4 w-4" aria-hidden="true" />
+                )}
+                {changePct >= 0 ? '+' : ''}
+                {changePct.toFixed(1)}%
+              </p>
+            </div>
+          ) : null}
+        </div>
+
+        {salary !== null ? (
+          <>
+            <div className="mt-5">
+              <ProgressBar
+                percent={(elapsedMonths / MONTHS_PER_YEAR) * 100}
+                label={`Salary earned in ${year}`}
+              />
+              <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+                <span className="tabular-nums">
+                  {elapsedMonths} / {MONTHS_PER_YEAR} months paid
+                </span>
+                <span className="tabular-nums">{formatMoney(monthly)} a month</span>
+              </div>
+            </div>
+
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <StatLine label="Earned So Far" value={formatMoney(earned)} />
+              <StatLine
+                label={isClosed ? 'Still to Come' : `Rest of ${year}`}
+                value={formatMoney(stillToCome)}
+              />
+            </div>
+          </>
+        ) : null}
+
+        {editing ? (
+          <SalaryForm
+            book={book}
+            year={year}
+            currentYear={currentYear}
+            onSave={(entryYear, amount) => {
+              writeBook({ ...book, [String(entryYear)]: amount });
+              setEditing(false);
+            }}
+            onRemove={(entryYear) => {
+              const { [String(entryYear)]: _removed, ...rest } = book;
+              writeBook(rest);
+            }}
+          />
+        ) : null}
+      </Panel>
+
+      {salary !== null ? (
+        <Panel>
+          <PanelHeading icon={<PiggyBank className="h-4 w-4" />} title="Savings vs Salary" />
+
+          <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <MetricCard
+              icon={<Coins className="h-4 w-4" />}
+              label="Saved"
+              value={formatMoney(saved)}
+              hint={`${savedRate.toFixed(1)}% of pay earned`}
+              accent
+            />
+            <MetricCard
+              icon={<Target className="h-4 w-4" />}
+              label="Left to Save"
+              value={formatMoney(leftToSave)}
+              hint={`of ${formatMoney(target)} target`}
+            />
+            <MetricCard
+              icon={<Banknote className="h-4 w-4" />}
+              label="From Remaining Pay"
+              value={neededRate !== null ? `${neededRate.toFixed(1)}%` : '—'}
+              hint={
+                neededRate !== null
+                  ? neededRate > 100
+                    ? `more than the ${formatMoney(stillToCome)} still to come`
+                    : `of ${formatMoney(stillToCome)} still to come`
+                  : leftToSave > 0
+                    ? `${year} has closed`
+                    : 'Target already met'
+              }
+            />
+          </div>
+
+          <p className="mt-5 text-center text-xs text-muted-foreground">
+            Your {year} plan sets aside {planRate.toFixed(1)}% of salary —{' '}
+            {formatMoney(target)} of {formatMoney(salary)}.
+          </p>
+        </Panel>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Inline rather than a dialog: the form only ever exists inside the unlocked
+ * card, so there is no way to reach it — or the figures it pre-fills — while
+ * the lock is closed.
+ */
+function SalaryForm({
+  book,
+  year,
+  currentYear,
+  onSave,
+  onRemove,
+}: {
+  book: SalaryBook;
+  year: number;
+  currentYear: number;
+  onSave: (year: number, amount: number) => void;
+  onRemove: (year: number) => void;
+}) {
+  /* The live year, the next one (for a raise agreed before January), the
+     four before it, and anything already on file outside that window. */
+  const years = useMemo(() => {
+    const span = new Set<number>(
+      Object.keys(book).flatMap((key) => {
+        const parsed = parseYearKey(key);
+        return parsed === null ? [] : [parsed];
+      }),
+    );
+    for (let offset = 1; offset >= -4; offset -= 1) span.add(currentYear + offset);
+    return Array.from(span).sort((a, b) => b - a);
+  }, [book, currentYear]);
+
+  const [entryYear, setEntryYear] = useState(year);
+  const [amount, setAmount] = useState(() =>
+    book[String(year)] !== undefined ? String(book[String(year)]) : '',
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const pickYear = (next: number) => {
+    setEntryYear(next);
+    setAmount(book[String(next)] !== undefined ? String(book[String(next)]) : '');
+    setError(null);
+  };
+
+  // Commas and a leading $ are what a pasted payslip figure tends to carry.
+  const parsed = Number(amount.replace(/[$,\s]/g, ''));
+  const valid = amount.trim() !== '' && Number.isFinite(parsed) && parsed > 0 && parsed <= MAX_SALARY;
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!valid) {
+      setError(`Enter an amount between ${formatMoney(0.01)} and ${formatMoney(MAX_SALARY)}.`);
+      return;
+    }
+    // Rounded to cents on the way in, so the reduce over months downstream
+    // starts from a value that can actually be paid.
+    onSave(entryYear, Math.round(parsed * 100) / 100);
+  };
+
+  const onFile = Object.entries(book)
+    .map(([key, value]) => ({ year: Number(key), amount: value }))
+    .sort((a, b) => b.year - a.year);
+
+  return (
+    <div className="mt-6 border-t border-border pt-5">
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        <div className="grid grid-cols-[7rem_1fr] gap-3">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Year
+            </span>
+            <Select value={String(entryYear)} onValueChange={(next) => pickYear(Number(next))}>
+              <SelectTrigger
+                size="default"
+                aria-label="Salary year"
+                className={cn(SWITCHER_CLASS, 'w-full tabular-nums')}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {years.map((option) => (
+                  <SelectItem key={option} value={String(option)} className="tabular-nums">
+                    {option}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Annual Salary (USD)
+            </span>
+            <Input
+              inputMode="decimal"
+              autoComplete="off"
+              placeholder="0.00"
+              value={amount}
+              onChange={(event) => {
+                setAmount(event.target.value);
+                setError(null);
+              }}
+              aria-invalid={error !== null}
+              className="h-9 rounded-lg border-border bg-muted/40 tabular-nums focus-visible:border-emerald-500 focus-visible:ring-emerald-500/40"
+            />
+          </label>
+        </div>
+
+        <p className="text-[11px] text-muted-foreground tabular-nums">
+          {valid
+            ? `≈ ${formatMoney(parsed / MONTHS_PER_YEAR)} a month across ${entryYear}. A raise mid-year? Update ${entryYear}'s figure.`
+            : 'Spread evenly across the year’s 12 months.'}
+        </p>
+
+        {error ? (
+          <p role="alert" className="text-xs text-destructive">
+            {error}
+          </p>
+        ) : null}
+
+        <Button
+          type="submit"
+          className="h-10 w-full rounded-lg bg-emerald-500 font-semibold text-white hover:bg-emerald-400 focus-visible:ring-emerald-500/40 dark:text-emerald-950 sm:w-auto sm:self-end"
+        >
+          <Check className="h-4 w-4" />
+          Save {entryYear}
+        </Button>
+      </form>
+
+      {onFile.length > 0 ? (
+        <div className="mt-5">
+          <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            On File
+          </p>
+          <div className="divide-y divide-border">
+            {onFile.map((row) => (
+              <div key={row.year} className="flex items-center gap-3 py-1.5">
+                <span className="w-12 text-sm font-medium tabular-nums text-muted-foreground">
+                  {row.year}
+                </span>
+                <span className="flex-1 text-sm font-semibold tabular-nums text-foreground">
+                  {formatMoney(row.amount)}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Remove ${row.year} salary`}
+                  onClick={() => onRemove(row.year)}
+                  className="text-muted-foreground hover:text-destructive"
+                >
+                  <Trash2 />
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /*                          Navigation switcher bar                           */
 /* -------------------------------------------------------------------------- */
 
@@ -1753,6 +2289,7 @@ const TAB_DEFS = [
   { id: 'monthly', label: 'Monthly', Icon: Layers },
   { id: 'cash', label: 'Cash Book', Icon: BookOpen },
   { id: 'fd', label: 'Fixed Deposit', Icon: Landmark },
+  { id: 'salary', label: 'Salary', Icon: Briefcase },
 ] as const;
 
 type TabId = (typeof TAB_DEFS)[number]['id'];
@@ -1766,7 +2303,7 @@ type TabId = (typeof TAB_DEFS)[number]['id'];
    dark rule carries an extra `.dark` in its selector, so it would outrank an
    unprefixed override no matter the class order. Restating it with a matching
    modifier set lets twMerge drop the token version outright instead. */
-/* Below `sm`, four side-by-side labels don't fit their grid column at any
+/* Below `sm`, five side-by-side labels don't fit their grid column at any
    font size that stays legible — "Cash Book" and "Fixed Deposit" overflowed
    `whitespace-nowrap` and bled into the neighboring icon. Stacking icon over
    label shortens each line to a single word, which fits; `sm:` restores the
@@ -2167,7 +2704,7 @@ export default function SavingsPage() {
         >
           {/* Surface and idle text come from the component's own `bg-muted` /
               `text-muted-foreground`; only layout and the border are set here. */}
-          <TabsList className="grid w-full grid-cols-4 gap-1 rounded-xl border border-border p-1 group-data-horizontal/tabs:h-auto">
+          <TabsList className="grid w-full grid-cols-5 gap-1 rounded-xl border border-border p-1 group-data-horizontal/tabs:h-auto">
             {TAB_DEFS.map(({ id, label, Icon }) => (
               <TabsTrigger key={id} value={id} className={TRIGGER_CLASS}>
                 <Icon className="h-4 w-4" />
@@ -2225,6 +2762,17 @@ export default function SavingsPage() {
 
           <TabsContent value="fd">
             <FdPanel mounted={mounted} today={today} />
+          </TabsContent>
+
+          <TabsContent value="salary">
+            <SalaryPanel
+              mounted={mounted}
+              year={activeYear}
+              currentYear={currentYear}
+              elapsedMonths={maxMonth + 1}
+              saved={netWealth}
+              target={yearTarget}
+            />
           </TabsContent>
         </Tabs>
 

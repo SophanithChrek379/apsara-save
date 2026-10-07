@@ -108,3 +108,50 @@ test('fixed deposit tab shows a read-only preview with no controls', async ({ pa
   await expect(page.getByRole('progressbar', { name: /fixed deposit term progress/i })).toBeVisible();
   await expect(page.getByRole('tabpanel').getByRole('button')).toHaveCount(0);
 });
+
+test('salary tab stays locked until Face ID, then takes and hides a salary', async ({ page, context }) => {
+  // Chromium's virtual authenticator stands in for Face ID: a built-in
+  // ("internal") authenticator that always verifies the user. The figure is a
+  // made-up one so no real salary is ever committed alongside the tests.
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('WebAuthn.enable');
+  await cdp.send('WebAuthn.addVirtualAuthenticator', {
+    options: {
+      protocol: 'ctap2',
+      transport: 'internal',
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+
+  await page.goto('/savings');
+  const salaryTab = page.getByRole('tab', { name: /salary/i });
+  await salaryTab.click();
+  await expect(salaryTab).toHaveAttribute('aria-selected', 'true');
+
+  // Locked: placeholders only, and nothing salary-shaped in the panel.
+  const panel = page.getByRole('tabpanel');
+  await expect(panel.getByText('Locked')).toBeVisible();
+  await panel.getByRole('button', { name: /set up face id to view/i }).click();
+
+  // First unlock with nothing on file opens the entry form directly.
+  await panel.getByRole('textbox').fill('12,000');
+  await panel.getByRole('button', { name: /^save \d{4}$/i }).click();
+  await expect(panel.getByText('$12,000.00', { exact: true })).toBeVisible();
+  await expect(panel.getByText('Savings vs Salary')).toBeVisible();
+
+  // Locking drops the figure out of the DOM, not just out of sight.
+  await panel.getByRole('button', { name: 'Lock salary' }).click();
+  await expect(panel.getByText('$12,000.00', { exact: true })).toHaveCount(0);
+
+  // A second unlock uses the registered passkey and reads the stored figure.
+  await panel.getByRole('button', { name: /unlock with face id/i }).click();
+  await expect(panel.getByText('$12,000.00', { exact: true })).toBeVisible();
+
+  // Leaving the tab unmounts it, so coming back asks again.
+  await page.getByRole('tab', { name: /daily/i }).click();
+  await salaryTab.click();
+  await expect(page.getByRole('tabpanel').getByText('Locked')).toBeVisible();
+});
